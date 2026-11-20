@@ -207,7 +207,7 @@ static void draw_header(App *app, UiState *s)
     draw_logo(ui, 18, 16);
     ui_text_font(ui, FONT_BOLD, 60, 12, 15.5f, UI_TEXT, "CELLSCOPE");
     ui_text_font(ui, FONT_MEDIUM, 60, 33, 9.2f, UI_FAINT,
-                 "ANDROID CELL DATA  ·  METER VISION");
+                 "LETS PROVE DIRECTED ENERGY TOGETHER!");
 
     char adb_buf[160];
     UiColor adb_col = UI_MUTED;
