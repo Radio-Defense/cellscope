@@ -82,6 +82,10 @@ and **Relaunch app** as fallbacks. If you previously denied access, enable
 **CellScope** in *System Settings → Privacy & Security → Camera*, then click
 Retry.
 
+macOS shows a mandatory green camera-in-use indicator while any application has
+the camera open. It is controlled by the OS and cannot be disabled by CellScope.
+Pausing releases the camera and turns the indicator off; resuming reopens it.
+
 Command-line options are handed to the relaunched instance through a
 short-lived temp file, so `--vlm`, `--capture-dir`, etc. survive the handoff.
 Set `CELLSCOPE_NO_AUTO_RELAUNCH=1` when debugging in Xcode/LLDB. The handoff
