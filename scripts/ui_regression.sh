@@ -46,6 +46,9 @@ CELLSCOPE_START_PAUSED=1 "$APP" --no-camera --no-modal --relaunched --no-runtime
 echo "ok paused -> $OUT/paused.png"
 
 # Keep the single README screenshot current after every UI regression run.
+# The main fixture seeds simulated ADB samples and readings, presents
+# docs/example.png as a live webcam, and mirrors its 2526.5744 MHz reading in
+# LIVE DETECTION.
 "$APP" --autoplay --image "$IMAGE" --readme-fixture main \
     --screenshot "$ROOT/docs/screenshot-main.png" --screenshot-delay 1200 --run-ms 3000 \
     --no-modal --no-runtime --capture-dir "$OUT/capture-readme" >/dev/null 2>&1 || {

@@ -688,7 +688,9 @@ For UI changes, build the Debug app, render the major states, and inspect them:
 The script configures and builds `build/` as Debug, runs `ctest`, covers main,
 live reading, consensus result, Settings, Upload, model chooser,
 remove-confirmation, and paused states, and refreshes
-`docs/screenshot-main.png` after the run.
+`docs/screenshot-main.png` after the run. The README fixture seeds simulated
+ADB samples and readings, presents `docs/example.png` as a live webcam, and
+mirrors its `2526.5744 MHz` reading in LIVE DETECTION.
 ```
 
 The test suite covers PLMN splitting, LTE/NR ARFCN conversions, a realistic

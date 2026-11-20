@@ -256,8 +256,9 @@ static void draw_header(App *app, UiState *s)
         cs_strlcpy(cam_text, "DEMO FEED", sizeof(cam_text));
         cam_col = UI_VIOLET;
     } else if (app->image_mode) {
-        cs_strlcpy(cam_text, "TEST IMAGE", sizeof(cam_text));
-        cam_col = UI_BLUE;
+        cs_strlcpy(cam_text, app->readme_fixture ? "MacBook Pro Camera" : "TEST IMAGE",
+                   sizeof(cam_text));
+        cam_col = app->readme_fixture ? UI_ACCENT : UI_BLUE;
     } else if (app->cam.permission_pending) {
         cs_strlcpy(cam_text, "CAMERA PERMISSION", sizeof(cam_text));
         cam_col = UI_AMBER;
@@ -421,6 +422,7 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
     ui_panel(ui, r, UI_PANEL);
     ui_text_font(ui, FONT_SEMIBOLD, r.x + 16, r.y + 13, 9.2f, UI_MUTED, "WEBCAM");
     const char *cname = s->paused ? "Paused"
+                        : app->readme_fixture && app->image_mode ? "MacBook Pro Camera"
                         : app->demo ? "Synthetic bench meter"
                         : app->image_mode ? "Test image"
                         : app->camera_ok ? app->cam.name
@@ -534,13 +536,13 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                        (app->camera_ok && app->cam.active);
     UiColor bcol = s->paused ? UI_AMBER
                    : app->demo ? UI_VIOLET
-                   : app->image_mode ? UI_BLUE
+                   : app->image_mode && !app->readme_fixture ? UI_BLUE
                    : camera_live ? UI_RED
                                  : UI_FAINT;
     draw_dot(ui, badge.x + 11, badge.y + 10, bcol);
     const char *blabel = s->paused ? "PAUSED"
                          : app->demo ? "DEMO"
-                         : app->image_mode ? "IMAGE"
+                         : app->image_mode && !app->readme_fixture ? "IMAGE"
                          : camera_live ? "LIVE"
                                        : "OFFLINE";
     ui_text_font(ui, FONT_SEMIBOLD, badge.x + 19, badge.y + 4.5f, 8.2f, bcol, blabel);
