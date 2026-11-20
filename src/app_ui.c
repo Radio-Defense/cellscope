@@ -634,44 +634,7 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                          "screen visible · reading next frame");
         }
     }
-
-    /* Reader status, confidence, backend and raw answer live in the webcam
-     * pane now that the dedicated reader pane is gone. */
-    if (!app->demo) {
-        UiRect st = ui_rect(p.x + 12, p.y + p.h - 64,
-                            CS_MIN(p.w - 24, p.w * 0.58f), 52);
-        ui_round_rect(ui, st, 8, UI_COLOR(5, 9, 13, 222));
-        UiColor sc = s->reader.error[0] ? UI_RED
-                     : (s->reader.screen_visible || s->reader.visible) ? UI_ACCENT
-                                                                       : UI_MUTED;
-        draw_dot(ui, st.x + 12, st.y + 14, sc);
-        char status[180];
-        cs_strlcpy(status, s->reader.status[0] ? s->reader.status : "Watching for a display…",
-                   sizeof(status));
-        ui_text_ellipsis(ui, FONT_MEDIUM, st.x + 20, st.y + 7, 9.4f, UI_MUTED,
-                         st.w - 128, status);
-        char burst[64];
-        if (s->reader.burst_count > 0)
-            snprintf(burst, sizeof(burst), "%d/12 candidates · Q%d%%", s->reader.burst_count,
-                     (int)(s->reader.best_score * 100.0f));
-        else
-            cs_strlcpy(burst, "no candidates", sizeof(burst));
-        ui_text_right(ui, FONT_MONO, st.x + st.w - 10, st.y + 8, 8.0f, UI_FAINT, burst);
-
-        const char *detail = s->reader.error[0] ? s->reader.error
-                            : s->reader.raw[0] ? s->reader.raw
-                            : s->reader.detail[0] ? s->reader.detail
-                                                  : "";
-        char meta[300];
-        snprintf(meta, sizeof(meta), "CONF %d%% · %s%s%s",
-                 (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0),
-                 s->reader.backend[0] ? s->reader.backend : "reader off",
-                 detail[0] ? " · " : "", detail);
-        ui_text_ellipsis(ui, FONT_MONO, st.x + 20, st.y + 29, 7.8f,
-                         s->reader.error[0] ? UI_RED : UI_FAINT, st.w - 30, meta);
-    }
 }
-
 
 typedef struct {
     const char *label;
