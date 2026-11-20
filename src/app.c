@@ -195,7 +195,7 @@ static int visibility_pick_locked(App *app, bool require_consensus, int *out_rea
 }
 
 static bool visibility_emit_locked(App *app, int frame_index, double consensus,
-                                   int readable_count)
+                                   int readable_count, bool consensus_verified)
 {
     VisibilitySession *v = &app->visibility;
     /* One consensus per visibility event. A new event is only created after
@@ -230,7 +230,14 @@ static bool visibility_emit_locked(App *app, int frame_index, double consensus,
     ms.ts_ms = ts;
     cs_format_time_ms(ms.ts_ms, ms.time_text, sizeof(ms.time_text));
     ms.hz = (uint64_t)(f->hz + 0.5);
-    ms.confidence = f->confidence;
+    /* Consensus rows use the winning cluster's actual weight share, not the
+     * model's per-frame default (usually 0.75). A screen-loss fallback row
+     * without a verified consensus keeps the frame's model confidence. */
+    double confidence = consensus_verified ? consensus : f->confidence;
+    if (!(confidence > 0.0)) confidence = f->confidence;
+    if (confidence < 0.0) confidence = 0.0;
+    if (confidence > 1.0) confidence = 1.0;
+    ms.confidence = confidence;
     cs_strlcpy(ms.raw, f->raw, sizeof(ms.raw));
     cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
     cs_strlcpy(ms.path, capture, sizeof(ms.path));
@@ -246,7 +253,7 @@ static bool visibility_emit_locked(App *app, int frame_index, double consensus,
     app->reader.visible = true;
     app->reader.display_until_ms = cs_now_ms() + 3000;
     app->reader.hz = (double)ms.hz;
-    app->reader.confidence = ms.confidence;
+    app->reader.confidence = confidence;
     cs_strlcpy(app->reader.raw, ms.raw, sizeof(app->reader.raw));
     char eng[64];
     cs_format_eng(ms.hz, eng, sizeof(eng));
@@ -264,7 +271,7 @@ static void visibility_commit_locked(App *app)
         int readable = 0;
         double consensus = 0.0;
         int idx = visibility_pick_locked(app, false, &readable, &consensus);
-        if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable);
+        if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable, false);
     }
     visibility_reset_locked(app);
 }
@@ -276,7 +283,7 @@ static void visibility_try_consensus_locked(App *app)
     int readable = 0;
     double consensus = 0.0;
     int idx = visibility_pick_locked(app, true, &readable, &consensus);
-    if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable);
+    if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable, true);
 }
 
 static void visibility_update_locked(App *app, const MeterReading *r, const uint8_t *rgb,
@@ -961,7 +968,7 @@ static void readme_fixture_seed(App *app)
         m.ts_ms = now - (int64_t)(CS_ARRAY_LEN(meters) - 1 - i) * 1700;
         cs_format_time_ms(m.ts_ms, m.time_text, sizeof(m.time_text));
         m.hz = (uint64_t)(meters[i] * 1e6 + 0.5);
-        m.confidence = 0.95;
+        m.confidence = 1.0;
         snprintf(m.raw, sizeof(m.raw), "%.4fMHz", meters[i]);
         cs_strlcpy(m.backend, "GLM-OCR", sizeof(m.backend));
         snprintf(m.shot_name, sizeof(m.shot_name), "meter_readme_%02d.png", i + 1);
@@ -973,9 +980,9 @@ static void readme_fixture_seed(App *app)
     app->reader.visible = app->readme_fixture_mode == 2 ? false : true;
     app->reader.live_valid = app->readme_fixture_mode != 3;
     app->reader.hz = latest * 1e6;
-    app->reader.confidence = 0.95;
+    app->reader.confidence = 1.0;
     app->reader.live_hz = latest * 1e6;
-    app->reader.live_confidence = 0.95;
+    app->reader.live_confidence = 1.0;
     app->reader.live_ms = now;
     app->reader.display_until_ms = app->reader.visible ? now + 300000 : 0;
     app->reader.burst_count = 6;
