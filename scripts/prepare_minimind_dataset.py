@@ -92,6 +92,17 @@ def augment_image(image, rng):
         out = ImageEnhance.Contrast(out).enhance(rng.uniform(0.8, 1.2))
     if rng.random() < 0.3:
         out = out.filter(ImageFilter.GaussianBlur(radius=rng.uniform(0.3, 1.2)))
+    if rng.random() < 0.2:
+        from PIL import ImageDraw
+        glare = Image.new("RGBA", out.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(glare)
+        rw = rng.randint(out.width // 8, out.width // 3)
+        rh = rng.randint(out.height // 10, out.height // 3)
+        cx = rng.randint(0, out.width)
+        cy = rng.randint(0, out.height)
+        draw.ellipse((cx - rw, cy - rh, cx + rw, cy + rh),
+                     fill=(255, 255, 255, rng.randint(30, 85)))
+        out = Image.alpha_composite(out.convert("RGBA"), glare).convert("RGB")
     buf = io.BytesIO()
     out.save(buf, format="JPEG", quality=90)
     return buf.getvalue()
