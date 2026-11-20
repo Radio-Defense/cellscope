@@ -92,6 +92,8 @@ typedef struct {
     double live_confidence;
     int64_t live_ms;
     int64_t display_until_ms;
+    bool failure_visible;
+    int64_t failure_until_ms;
     char live_raw[256];
     int64_t last_attempt_ms;
     int64_t last_ok_ms;

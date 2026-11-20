@@ -348,29 +348,27 @@ frame is kept for the presence check, so there is no all-frame archive. The
 guide image is cropped to the top 75% of the central guide ROI and scaled to
 640 px before the VLM, which removes most of the face/background.
 
-A visibility event starts when presence is detected and ends when the presence
-check says no (or capture is paused/stopped). Every candidate frame with a
-readable extraction is temporarily retained in memory with its webcam capture
-timestamp. Zero readings (`0`, `0.0 Hz`, CTCSS zeros) are never accepted as a
-frequency. During the event:
+A visibility event starts when a candidate frame is available. Each attempt is
+limited to **2 seconds of captured candidate frames**. Every candidate frame
+with a readable extraction is temporarily retained in memory with its webcam
+capture timestamp. Zero readings (`0`, `0.0 Hz`, CTCSS zeros) are never
+accepted as a frequency. During the attempt:
 
 - the **left-top live card** updates with every extracted reading;
-- the webcam reader overlay stays blank, showing “collecting”;
-- every retained candidate frame votes in a frequency cluster, weighted by VLM
+- retained candidate frames vote in a frequency cluster, weighted by VLM
   confidence and frame quality;
 - the cluster with the greatest aggregate weight wins; within it, the
   highest-quality frame is selected;
-- **as soon as a stable consensus is reached** (three unanimity/80%-weight
-  readings), the winning row is added to the bottom-right table
-  **immediately**, without waiting for pause or screen loss. It contains the
-  frame filename and the epoch timestamp when that webcam frame appeared;
-- the webcam overlay displays the winning value for **3 seconds**, then clears;
-  capture continues until the screen leaves, but that visibility event is not
-  recorded twice.
+- **consensus requires two agreeing readings within the 2-second window**;
+  the winning row is added to the table immediately, containing the frame
+  filename and the epoch timestamp when that webcam frame appeared;
+- the lower-right **LIVE DETECTION** box shows the consensus value, a green
+  check, and `CONSENSUS REACHED` for **3 seconds**;
+- if no valid reading is produced within the window, the same box shows a red
+  X and **“Try again.”** for 3 seconds, and no row is added.
 
-The candidate frame list is freed when the display leaves. It is not a fixed
-12-frame sample; 512 frames is only a safety cap for a display left visible for
-a very long time without consensus. The DSP pre-filter rejects blurry, moving,
+The candidate frame list is freed after the attempt or when the display leaves.
+It is not a fixed 12-frame sample; 512 frames is only a safety cap. The DSP pre-filter rejects blurry, moving,
 low-contrast, crushed or glared frames before they consume VLM inference time.
 
 No fixed 12-frame sample is used for the decision. The 12-frame value in the UI
