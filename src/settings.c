@@ -8,7 +8,13 @@ void settings_defaults(AppSettings *s)
 {
     memset(s, 0, sizeof(*s));
     s->version = 1;
-    cs_strlcpy(s->reader_backend, "minimind", sizeof(s->reader_backend));
+    cs_strlcpy(s->reader_backend, "hf", sizeof(s->reader_backend));
+    cs_strlcpy(s->hf_model, "zai-org/GLM-OCR", sizeof(s->hf_model));
+    char data_dir[CS_PATH_MAX];
+    if (cs_app_data_dir(data_dir, sizeof(data_dir))) {
+        cs_path_join(s->hf_model_path, sizeof(s->hf_model_path), data_dir,
+                     "runtime/hf-models/zai-org__GLM-OCR");
+    }
     s->hf_port = 8091;
     cs_strlcpy(s->hf_device, "auto", sizeof(s->hf_device));
 }

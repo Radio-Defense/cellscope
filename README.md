@@ -30,7 +30,8 @@ state and a webcam at the same time.
 Camera frames and readings stay local. Webcam frames are converted to RGB24,
 scaled to at most 1024 px wide with preserved aspect ratio, PNG-encoded, and sent
 as a data URL. The HF bridge decodes them as RGB and preserves the processor's
-`pixel_attention_mask`; this is what keeps SmolVLM's image tokens aligned. No
+the processor's image inputs and attention mask; the GLM-OCR path uses its own
+chat template and `Text Recognition:` prompt. No
 telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
 releases, ModelScope, and Hugging Face if you download an HF model.
 
@@ -230,7 +231,7 @@ disk:
 
 ```bash
 export HF_TOKEN=hf_...          # or HUGGINGFACE_HUB_TOKEN
-cellscope --download-model HuggingFaceTB/SmolVLM-256M-Instruct
+cellscope --download-model zai-org/GLM-OCR
 ```
 
 The command:
@@ -263,14 +264,14 @@ without a token; gated models need one.
 
 `settings.json` is in the CellScope working directory (override with
 `CELLSCOPE_SETTINGS`). On first run it is created with
-`"reader_backend": "minimind"`; the download command switches it to `"hf"`:
+`"reader_backend": "hf"` with `"hf_model": "zai-org/GLM-OCR"` is the default:
 
 ```json
 {
   "version": 1,
   "reader_backend": "hf",
-  "hf_model": "HuggingFaceTB/SmolVLM-256M-Instruct",
-  "hf_model_path": "/…/runtime/hf-models/HuggingFaceTB__SmolVLM-256M-Instruct",
+  "hf_model": "zai-org/GLM-OCR",
+  "hf_model_path": "/…/runtime/hf-models/zai-org__GLM-OCR",
   "hf_port": 8091,
   "hf_device": "auto",
   "camera_index": 0
@@ -280,11 +281,12 @@ without a token; gated models need one.
 Set `reader_backend` back to `"minimind"` (or delete the file) to return to the
 MiniMind runtime. `hf_device` accepts `auto`, `cpu`, `mps`, or `cuda:0`;
 `hf_port` defaults to 8091. Not every Hugging Face VLM architecture is
-compatible; the bridge uses `AutoProcessor` plus
-`AutoModelForImageTextToText`/`AutoModelForVision2Seq`. Model-specific Python
-and Transformers versions are provisioned automatically, but an architecture
-still needs a compatible bridge processor/prompt. It was tested with
-SmolVLM-256M-Instruct.
+compatible; the bridge has a dedicated GLM-OCR path (`GlmOcrForConditionalGeneration`,
+`Text Recognition:`) and a generic `AutoProcessor` path for other
+image-text models. Model-specific Python and Transformers versions are
+provisioned automatically, but an architecture still needs a compatible bridge
+processor/prompt. It was tested with
+GLM-OCR. SmolVLM-256M remains supported as a lightweight fallback.
 
 Optional external tiny VLM (Ollama):
 

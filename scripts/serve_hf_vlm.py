@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -67,10 +68,6 @@ def pick_dtype(name, device):
 def load_model(args):
     import torch
     from transformers import AutoProcessor
-    try:
-        from transformers import AutoModelForImageTextToText as AutoModel
-    except Exception:
-        from transformers import AutoModelForVision2Seq as AutoModel
 
     model_path = os.path.abspath(args.model)
     if not os.path.isdir(model_path):
@@ -79,9 +76,19 @@ def load_model(args):
     dtype = pick_dtype(args.dtype, device)
     print(f"[cellscope-hf] loading {model_path} device={device} dtype={dtype}")
     started = time.time()
+    with open(os.path.join(model_path, "config.json"), "r", encoding="utf-8") as f:
+        config = json.load(f)
+    model_type = str(config.get("model_type", ""))
     processor = AutoProcessor.from_pretrained(
         model_path, trust_remote_code=bool(args.trust_remote_code)
     )
+    if model_type == "glm_ocr":
+        from transformers import GlmOcrForConditionalGeneration as AutoModel
+    else:
+        try:
+            from transformers import AutoModelForImageTextToText as AutoModel
+        except Exception:
+            from transformers import AutoModelForVision2Seq as AutoModel
     model = AutoModel.from_pretrained(
         model_path,
         torch_dtype=dtype,
@@ -89,8 +96,8 @@ def load_model(args):
         trust_remote_code=bool(args.trust_remote_code),
     )
     model = model.eval().to(device)
-    print(f"[cellscope-hf] loaded in {time.time() - started:.1f}s")
-    return model, processor, device, dtype
+    print(f"[cellscope-hf] loaded in {time.time() - started:.1f}s type={model_type}")
+    return model, processor, device, dtype, model_type
 
 
 def extract_content(body):
@@ -144,7 +151,66 @@ def build_prompt(processor, text):
         return "<image>\n" + (text or "Read the frequency display.")
 
 
-def make_handler(model, processor, device, dtype, lock, args):
+def glm_ocr(model, processor, device, image, lock, max_new_tokens):
+    """Run GLM-OCR's supported Text Recognition prompt and return its text."""
+    import torch
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": "Text Recognition:"},
+            ],
+        }
+    ]
+    inputs = processor.apply_chat_template(
+        messages,
+        images=[image],
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt",
+    )
+    values = {}
+    for key, value in inputs.items():
+        if torch.is_tensor(value):
+            values[key] = value.to(device)
+    tokenizer = getattr(processor, "tokenizer", None)
+    gen = {"max_new_tokens": max(1, max_new_tokens), "do_sample": False}
+    pad = getattr(tokenizer, "pad_token_id", None)
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if pad is not None:
+        gen["pad_token_id"] = pad
+    if eos is not None:
+        gen["eos_token_id"] = eos
+    with lock, torch.inference_mode():
+        generated = model.generate(**values, **gen)
+    trim = int(values["input_ids"].shape[1])
+    return processor.batch_decode(generated[:, trim:], skip_special_tokens=True)[0].strip()
+
+
+def extract_frequency(text):
+    if not text:
+        return None
+    # Prefer the explicitly labelled meter field.
+    patterns = [
+        r"Freq\s*[:：]\s*([0-9][0-9.,]*)\s*(GHz|MHz|kHz|Hz)",
+        r"([0-9][0-9.,]{2,})\s*(GHz|MHz|kHz|Hz)",
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, text, re.IGNORECASE):
+            value = m.group(1).replace(",", "")
+            unit = m.group(2)
+            try:
+                if float(value) <= 0:
+                    continue
+            except ValueError:
+                continue
+            return f"{value}{unit}"
+    return None
+
+
+def make_handler(model, processor, device, dtype, model_type, lock, args):
     import torch
 
     class Handler(BaseHTTPRequestHandler):
@@ -189,6 +255,31 @@ def make_handler(model, processor, device, dtype, lock, args):
                 if not image_b64:
                     raise ValueError("no image_url data part in the request")
                 image = decode_image(image_b64)
+                started = time.time()
+                if model_type == "glm_ocr":
+                    ocr = glm_ocr(model, processor, device, image, lock,
+                                  min(max(1, args.max_new_tokens), 64))
+                    frequency = extract_frequency(ocr)
+                    is_presence = ("Is a frequency counter" in (text or "") or
+                                   "Answer yes or no" in (text or ""))
+                    if is_presence:
+                        answer = "Yes." if frequency else "No."
+                    else:
+                        answer = frequency if frequency else "NONE"
+                    print(f"[cellscope-hf] glm {time.time() - started:.2f}s: "
+                          f"{answer!r} ocr={ocr[:80]!r}", flush=True)
+                    self._json(200, {
+                        "id": "chatcmpl-cellscope",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": MODEL_ID,
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": answer},
+                            "finish_reason": "stop",
+                        }],
+                    })
+                    return
                 prompt = build_prompt(processor, text)
                 inputs = processor(text=[prompt], images=[image], return_tensors="pt")
                 values = {}
@@ -199,7 +290,6 @@ def make_handler(model, processor, device, dtype, lock, args):
                         else:
                             value = value.to(device)
                     values[key] = value
-                started = time.time()
                 # Some processors return helper fields that a particular model's
                 # generate() does not accept (e.g. batch_num_images). Keep the
                 # common multimodal generation inputs only.
@@ -255,9 +345,9 @@ def main():
     args = parse_args()
     if not 1 <= args.port <= 65535:
         raise SystemExit("invalid port")
-    model, processor, device, dtype = load_model(args)
+    model, processor, device, dtype, model_type = load_model(args)
     lock = threading.Lock()
-    handler = make_handler(model, processor, device, dtype, lock, args)
+    handler = make_handler(model, processor, device, dtype, model_type, lock, args)
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"[cellscope-hf] listening on http://{args.host}:{args.port}", flush=True)
     try:
