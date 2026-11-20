@@ -580,36 +580,22 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
     /* Live detection box. Consensus replaces the live value for the same
      * three-second window and moves the green check into this box. */
     bool consensus = s->reader.visible && s->reader.hz > 0;
-    bool failure = s->reader.failure_visible;
-    if (s->reader.screen_visible || consensus || failure) {
+    if (s->reader.screen_visible || consensus) {
         float cw = CS_MIN(276.0f, p.w * 0.36f);
         UiRect lr = ui_rect(p.x + p.w - cw - 12, p.y + p.h - 136, cw, 82);
         ui_round_rect(ui, lr, 9, UI_COLOR(4, 9, 12, 225));
-        ui_rect_outline(ui, lr, failure ? UI_COLOR(210, 82, 82, 235)
-                                         : consensus ? UI_COLOR(55, 150, 112, 235)
-                                                     : UI_COLOR(55, 92, 84, 220), 1);
+        ui_rect_outline(ui, lr, consensus ? UI_COLOR(55, 150, 112, 235)
+                                         : UI_COLOR(55, 92, 84, 220), 1);
         ui_text_font(ui, FONT_SEMIBOLD, lr.x + 12, lr.y + 9, 7.2f, UI_ACCENT,
                      "LIVE DETECTION");
-        if (consensus || failure) {
+        if (consensus) {
             float cx = lr.x + lr.w - 17;
             float cy = lr.y + 15;
-            if (consensus) {
-                UiColor check = UI_COLOR(95, 245, 170, 255);
-                ui_line(ui, cx - 7.0f, cy, cx - 2.0f, cy + 5.0f, check, 2.6f);
-                ui_line(ui, cx - 2.0f, cy + 5.0f, cx + 7.5f, cy - 6.0f, check, 2.6f);
-            } else {
-                UiColor x = UI_COLOR(245, 95, 95, 255);
-                ui_line(ui, cx - 6.0f, cy - 6.0f, cx + 6.0f, cy + 6.0f, x, 2.6f);
-                ui_line(ui, cx - 6.0f, cy + 6.0f, cx + 6.0f, cy - 6.0f, x, 2.6f);
-            }
+            UiColor check = UI_COLOR(95, 245, 170, 255);
+            ui_line(ui, cx - 7.0f, cy, cx - 2.0f, cy + 5.0f, check, 2.6f);
+            ui_line(ui, cx - 2.0f, cy + 5.0f, cx + 7.5f, cy - 6.0f, check, 2.6f);
         }
-        if (failure) {
-            ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f,
-                             UI_COLOR(245, 120, 120, 255), lr.w - 24, "Try again.");
-            ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f,
-                             UI_COLOR(210, 110, 110, 255), lr.w - 24,
-                             "NO CONSENSUS IN 2S");
-        } else if (consensus) {
+        if (consensus) {
             char eng[64];
             cs_format_eng((uint64_t)(s->reader.hz + 0.5), eng, sizeof(eng));
             ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f, UI_TEXT,

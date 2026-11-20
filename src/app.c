@@ -179,10 +179,12 @@ static int visibility_pick_locked(App *app, bool require_consensus, int *out_rea
     if (win < 0 || clusters[win].best < 0) return -1;
 
     if (require_consensus) {
-        /* The capture attempt is capped at two seconds, so require two
-         * agreeing readings rather than three. */
-        if (readable_count < 2) return -1;
-        if (clusters[win].count < 2) return -1;
+        /* A short, clear look at the meter commonly yields only three VLM
+         * frames before the display moves. Require three unanimous readings
+         * so the row is committed in real time instead of waiting for the
+         * screen-loss fallback. */
+        if (readable_count < 3) return -1;
+        if (clusters[win].count < 3) return -1;
         if (total_weight <= 0.0 || clusters[win].weight / total_weight < 0.80)
             return -1;
         if (second_weight > 0.0 &&
@@ -238,8 +240,6 @@ static bool visibility_emit_locked(App *app, int frame_index, double consensus,
     app->reader.accepted++;
     cs_strlcpy(app->reader.capture_path, capture, sizeof(app->reader.capture_path));
     app->reader.visible = true;
-    app->reader.failure_visible = false;
-    app->reader.failure_until_ms = 0;
     app->reader.display_until_ms = cs_now_ms() + 3000;
     app->reader.hz = (double)ms.hz;
     app->reader.confidence = ms.confidence;
@@ -252,43 +252,17 @@ static bool visibility_emit_locked(App *app, int frame_index, double consensus,
     return true;
 }
 
-static void visibility_fail_locked(App *app)
-{
-    VisibilitySession *v = &app->visibility;
-    if (!v->active) return;
-    app->reader.failure_visible = true;
-    app->reader.failure_until_ms = cs_now_ms() + 3000;
-    app->reader.visible = false;
-    app->reader.display_until_ms = 0;
-    app->reader.hz = 0;
-    app->reader.confidence = 0;
-    app->reader.live_valid = false;
-    app->reader.live_hz = 0;
-    app->reader.live_raw[0] = '\0';
-    cs_strlcpy(app->reader.status, "No consensus within 2 seconds — try again",
-               sizeof(app->reader.status));
-    app_log(app, "consensus failed: no valid reading within the 2s window");
-    visibility_reset_locked(app);
-}
-
 static void visibility_commit_locked(App *app)
 {
     VisibilitySession *v = &app->visibility;
     if (!v->active) return;
-    if (v->committed) {
-        visibility_reset_locked(app);
-        return;
+    if (!v->committed) {
+        int readable = 0;
+        double consensus = 0.0;
+        int idx = visibility_pick_locked(app, false, &readable, &consensus);
+        if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable);
     }
-    /* Leaving the screen before consensus is a failed attempt, not a
-     * last-frame fallback. Show the retry state. */
-    visibility_fail_locked(app);
-}
-
-static void visibility_check_timeout_locked(App *app)
-{
-    VisibilitySession *v = &app->visibility;
-    if (!v->active || v->committed || v->started_ms <= 0) return;
-    if (cs_epoch_ms() - v->started_ms >= 2500) visibility_fail_locked(app);
+    visibility_reset_locked(app);
 }
 
 static void visibility_try_consensus_locked(App *app)
@@ -318,12 +292,9 @@ static void visibility_update_locked(App *app, const MeterReading *r, const uint
     if (r->hz <= 0) return;
     v->readable_readings++;
     int64_t extracted = cs_epoch_ms();
-    if (!v->committed && v->started_ms > 0 && ts > 0 &&
-        ts - v->started_ms > 2000) {
-        visibility_fail_locked(app);
-        return;
-    }
-    /* Only the 2-second attempt window is retained. */
+    /* Keep the complete readable-frame history for the visibility interval,
+     * including frames after consensus; the list is freed when the display
+     * leaves. */
     visibility_store_frame_locked(v, r, rgb, w, h, ts, frame_score, extracted);
     if (!v->committed) visibility_try_consensus_locked(app);
 }
@@ -634,7 +605,6 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->readme_fixture = true;
             app->readme_fixture_mode = strcmp(mode, "live") == 0 ? 2
                                      : strcmp(mode, "best") == 0 ? 3
-                                     : strcmp(mode, "fail") == 0 ? 4
                                                                  : 1;
         } else if (strcmp(a, "--autoplay") == 0) {
             app->autoplay = true;
@@ -942,14 +912,11 @@ static void readme_fixture_seed(App *app)
     }
 
     double latest = meters[CS_ARRAY_LEN(meters) - 1];
-    bool fixture_fail = app->readme_fixture_mode == 4;
     app->reader.screen_visible = app->readme_fixture_mode == 3 ? false : true;
-    app->reader.visible = (app->readme_fixture_mode == 2 || fixture_fail) ? false : true;
-    app->reader.live_valid = (app->readme_fixture_mode != 3 && !fixture_fail);
-    app->reader.failure_visible = fixture_fail;
-    app->reader.failure_until_ms = fixture_fail ? now + 300000 : 0;
-    app->reader.hz = fixture_fail ? 0 : latest * 1e6;
-    app->reader.confidence = fixture_fail ? 0 : 0.95;
+    app->reader.visible = app->readme_fixture_mode == 2 ? false : true;
+    app->reader.live_valid = app->readme_fixture_mode != 3;
+    app->reader.hz = latest * 1e6;
+    app->reader.confidence = 0.95;
     app->reader.live_hz = latest * 1e6;
     app->reader.live_confidence = 0.95;
     app->reader.live_ms = now;
@@ -967,10 +934,7 @@ static void readme_fixture_seed(App *app)
     cs_strlcpy(app->reader.detail, "zai-org/GLM-OCR · fixture", sizeof(app->reader.detail));
     cs_strlcpy(app->reader.raw, "2551.9963MHz", sizeof(app->reader.raw));
     cs_strlcpy(app->reader.live_raw, "2551.9963MHz", sizeof(app->reader.live_raw));
-    if (fixture_fail)
-        cs_strlcpy(app->reader.status, "No consensus within 2 seconds — try again",
-                   sizeof(app->reader.status));
-    else if (app->readme_fixture_mode == 2)
+    if (app->readme_fixture_mode == 2)
         cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz",
                    sizeof(app->reader.status));
     else if (app->readme_fixture_mode == 3)
@@ -1298,12 +1262,6 @@ void app_update(App *app)
     }
 
     SDL_LockMutex(app->mu);
-    visibility_check_timeout_locked(app);
-    if (app->reader.failure_visible && app->reader.failure_until_ms > 0 &&
-        now >= app->reader.failure_until_ms) {
-        app->reader.failure_visible = false;
-        app->reader.failure_until_ms = 0;
-    }
     if (app->reader.visible && app->reader.display_until_ms > 0 &&
         now >= app->reader.display_until_ms) {
         app->reader.visible = false;
@@ -2022,34 +1980,7 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             continue;
         }
 
-        bool retry_wait = false;
-        SDL_LockMutex(app->mu);
-        retry_wait = app->reader.failure_visible &&
-                     app->reader.failure_until_ms > cs_epoch_ms();
-        app->reader.busy = false;
-        SDL_UnlockMutex(app->mu);
-        if (retry_wait) {
-            SDL_Delay(60);
-            continue;
-        }
-
-        if (!mock && candidate) {
-            /* A candidate is already screen evidence; skip the separate
-             * presence call so two frequency reads fit in the 2-second
-             * attempt window. */
-            SDL_LockMutex(app->mu);
-            if (!app->reader.screen_visible) {
-                app->reader.screen_visible = true;
-                app->reader.visible = false;
-                app->reader.display_until_ms = 0;
-                app->reader.hz = 0;
-                app->reader.confidence = 0;
-                app->reader.raw[0] = '\0';
-            }
-            app->reader.busy = true;
-            app->reader.error[0] = '\0';
-            SDL_UnlockMutex(app->mu);
-        } else if (!mock) {
+        if (!mock) {
             bool display_visible = false;
             char derr[512] = {0};
             if (!vlm_detect(&app->vlm, rgb, rw, rh, &display_visible, derr,
@@ -2122,10 +2053,6 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             app->reader.live_raw[0] = '\0';
             cs_strlcpy(app->reader.error, err, sizeof(app->reader.error));
             cs_strlcpy(app->reader.status, "No reading — adjust the meter", sizeof(app->reader.status));
-            if (candidate && !app->visibility.active) {
-                app->visibility.active = true;
-                app->visibility.started_ms = cs_epoch_ms();
-            }
             SDL_UnlockMutex(app->mu);
             SDL_Delay(120);
             continue;
