@@ -88,8 +88,6 @@ Set `CELLSCOPE_NO_AUTO_RELAUNCH=1` when debugging in Xcode/LLDB. The handoff
 also covers a raw executable started from a terminal; launching the bundle with
 `open` remains recommended.
 
-![Camera permission panel](docs/screenshot-camera-permission.png)
-
 ### Windows
 
 Use vcpkg for SDL3, FreeType, and libcurl:
@@ -382,10 +380,6 @@ No fixed 12-frame sample is used for the decision. The 12-frame value in the UI
 is only the staging/burst indicator. The table timestamp is compensated for VLM
 latency by using the source frame's webcam capture time, not the later response
 time.
-
-![Live per-frame reading](docs/screenshot-live-reading.png)
-
-![Best result after the screen leaves](docs/screenshot-best-result.png)
 
 ### Capture sessions and datasets
 
