@@ -35,9 +35,13 @@ tenets are:
   distance series from the head, a phones-off free-space control, and more
   simultaneous band logging to establish how often Band 7 is used.
 
-The study does **not** identify the transmitter. It establishes what the signal
-is not, constrains its strength, and identifies the measurements needed to go
-further.
+The study does **not yet formally identify** the transmitter. It excludes the
+co-located handset, the serving operator's allocated block, and ordinary local
+traffic, but it does not identify the network-side source. Based on the
+accumulated evidence, we suspect with a high degree of certainty that the
+directed-energy exposure source is the **LTE network**. The research this
+software supports is designed to test that hypothesis at scale and make the
+pattern much harder to deny.
 
 ### How CellScope helps
 
