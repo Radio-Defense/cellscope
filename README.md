@@ -146,6 +146,8 @@ The reader consumes the highest-scoring unused frame, with a score threshold so
 a blank wall does not trigger OCR. When a reading is accepted, the screenshot is
 the exact best frame that produced it. The UI shows `burst 12/12 · best 90%`.
 
+![Burst best-frame selection](docs/screenshot-burst.png)
+
 ### ADB connection
 
 On first launch CellScope shows:
