@@ -16,6 +16,8 @@ typedef struct {
     int meter_count;
     bool modal_open;
     bool modal_checking;
+    bool remove_meter_open;
+    int remove_meter_index;
     bool paused;
     bool ever_connected;
     char device_label[128];
@@ -53,6 +55,8 @@ static void snapshot(App *app, UiState *s)
     s->meter_count = app->meter_count;
     s->modal_open = app->modal_open;
     s->modal_checking = app->modal_checking;
+    s->remove_meter_open = app->remove_meter_open;
+    s->remove_meter_index = app->remove_meter_index;
     s->paused = app->paused;
     s->ever_connected = app->ever_connected;
     cs_strlcpy(s->device_label, app->device_label, sizeof(s->device_label));
@@ -886,7 +890,7 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
 {
     Ui *ui = &app->ui;
     static const ListColumn cols[] = {
-        {"TIME", 62}, {"SCREENSHOT", 190}, {"FREQUENCY (Hz)", 126},
+        {"", 30}, {"TIME", 62}, {"SCREENSHOT", 190}, {"FREQUENCY (Hz)", 126},
         {"GHz", 92}, {"CONF", 52}, {"BACKEND", 112},
     };
     const int ncols = (int)CS_ARRAY_LEN(cols);
@@ -930,7 +934,7 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
     ui_rect_fill(ui, head, UI_COLOR(17, 25, 33, 245));
     float hx = head.x + 8 - app->meter_scroll_x;
     for (int c = 0; c < ncols; c++) {
-        bool right = (c == 2 || c == 3 || c == 4);
+        bool right = (c == 3 || c == 4 || c == 5);
         if (right)
             ui_text_right(ui, FONT_MONO, hx + cols[c].width - 10, head.y + 7, 7.6f,
                           UI_FAINT, cols[c].label);
@@ -968,24 +972,37 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
         snprintf(conf, sizeof(conf), "%d%%", (int)(m.confidence * 100.0));
         const char *shot = ui_shot_name(&m);
         float x = view.x + 8 - app->meter_scroll_x;
-        ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.6f,
-                         newest ? UI_ACCENT : UI_FAINT, cols[0].width - 10, m.time_text);
+        UiRect del = ui_rect(x + 1, row.y + 5, 16, 16);
+        bool del_hover = ui_rect_contains(del, ui->mx, ui->my);
+        ui_round_rect(ui, del, 4, del_hover ? UI_COLOR(93, 40, 44, 255)
+                                            : UI_COLOR(24, 32, 40, 210));
+        ui_text_center(ui, FONT_MONO, del.x + del.w / 2, del.y + 2.5f, 10.0f,
+                       del_hover ? UI_COLOR(255, 170, 170, 255) : UI_FAINT, "×");
+        if (del_hover && ui->mouse_pressed) {
+            app_request_remove_meter(app, i);
+            ui_consume_click(ui);
+            x += cols[0].width;
+            continue;
+        }
         x += cols[0].width;
+        ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.6f,
+                         newest ? UI_ACCENT : UI_FAINT, cols[1].width - 10, m.time_text);
+        x += cols[1].width;
         ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.2f,
                          shot[0] ? UI_COLOR(150, 178, 198, 255) : UI_FAINT,
-                         cols[1].width - 10, shot[0] ? shot : "—");
-        x += cols[1].width;
-        ui_text_right(ui, FONT_MONO, x + cols[2].width - 10, row.y + 7, 10.4f,
-                      UI_TEXT, hz);
+                         cols[2].width - 10, shot[0] ? shot : "—");
         x += cols[2].width;
-        ui_text_right(ui, FONT_MONO, x + cols[3].width - 10, row.y + 8, 8.4f,
-                      UI_FAINT, eng);
+        ui_text_right(ui, FONT_MONO, x + cols[3].width - 10, row.y + 7, 10.4f,
+                      UI_TEXT, hz);
         x += cols[3].width;
         ui_text_right(ui, FONT_MONO, x + cols[4].width - 10, row.y + 8, 8.4f,
-                      UI_FAINT, conf);
+                      UI_FAINT, eng);
         x += cols[4].width;
+        ui_text_right(ui, FONT_MONO, x + cols[5].width - 10, row.y + 8, 8.4f,
+                      UI_FAINT, conf);
+        x += cols[5].width;
         ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.2f, UI_FAINT,
-                         cols[5].width - 10, m.backend[0] ? m.backend : "reader");
+                         cols[6].width - 10, m.backend[0] ? m.backend : "reader");
 
         if (ui_rect_contains(row, ui->mx, ui->my) && ui->mouse_pressed) {
             app->selected_meter_ts = m.ts_ms;
@@ -1196,6 +1213,50 @@ static void draw_modal(App *app, UiState *s)
     }
 }
 
+static void draw_remove_modal(App *app, UiState *s)
+{
+    Ui *ui = &app->ui;
+    float W = (float)ui->win_w, H = (float)ui->win_h;
+    ui_rect_fill(ui, ui_rect(0, 0, W, H), UI_COLOR(3, 5, 8, 200));
+    float cw = CS_MIN(460.0f, W - 60);
+    float ch = 214;
+    UiRect card = ui_rect((W - cw) / 2, (H - ch) / 2, cw, ch);
+    ui_round_rect(ui, ui_rect(card.x - 2, card.y - 2, card.w + 4, card.h + 4), 14,
+                  UI_COLOR(72, 34, 38, 150));
+    ui_panel(ui, card, UI_PANEL);
+    ui_round_rect(ui, ui_rect(card.x + 1, card.y + 1, card.w - 2, 3), 2, UI_RED);
+
+    MeterSample m;
+    memset(&m, 0, sizeof(m));
+    if (s->remove_meter_index >= 0) m = app_meter_at(app, s->remove_meter_index);
+    char eng[64], hz[64];
+    cs_format_eng(m.hz, eng, sizeof(eng));
+    cs_format_hz(m.hz, hz, sizeof(hz));
+
+    ui_text_font(ui, FONT_SEMIBOLD, card.x + 24, card.y + 22, 18.0f, UI_TEXT,
+                 "Remove this reading?");
+    ui_text_font(ui, FONT_UI, card.x + 24, card.y + 52, 10.2f, UI_MUTED,
+                 "This cannot be undone. The screenshot file stays on disk.");
+    UiRect val = ui_rect(card.x + 24, card.y + 78, card.w - 48, 48);
+    ui_round_rect(ui, val, 8, UI_COLOR(11, 17, 23, 255));
+    ui_rect_outline(ui, val, UI_BORDER_SOFT, 1);
+    ui_text_ellipsis(ui, FONT_MONO, val.x + 12, val.y + 7, 17.0f, UI_TEXT, val.w - 24,
+                     eng);
+    char sub[256];
+    snprintf(sub, sizeof(sub), "%s Hz · %s · %d%%", hz,
+             m.time_text[0] ? m.time_text : "—", (int)(m.confidence * 100.0));
+    ui_text_ellipsis(ui, FONT_MONO, val.x + 12, val.y + 28, 7.8f, UI_FAINT,
+                     val.w - 24, sub);
+
+    float by = card.y + card.h - 54;
+    UiRect cancel = ui_rect(card.x + card.w - 250, by, 110, 34);
+    UiRect remove = ui_rect(card.x + card.w - 126, by, 102, 34);
+    if (ui_button(ui, cancel, "Cancel", BUTTON_SECONDARY, true))
+        app_cancel_remove_meter(app);
+    if (ui_button(ui, remove, "Remove", BUTTON_DANGER, true))
+        app_confirm_remove_meter(app);
+}
+
 void app_draw(App *app)
 {
     Ui *ui = &app->ui;
@@ -1205,7 +1266,7 @@ void app_draw(App *app)
     layout(app, &l);
 
     ui_background(ui);
-    ui->block_interactive = s.modal_open;
+    ui->block_interactive = s.modal_open || s.remove_meter_open;
     draw_header(app, &s);
     draw_transport(app, &s);
     draw_runtime_banner(app, &s);
@@ -1215,5 +1276,6 @@ void app_draw(App *app)
     draw_footer(app, &s);
     ui->block_interactive = false;
     if (s.modal_open) draw_modal(app, &s);
+    if (s.remove_meter_open) draw_remove_modal(app, &s);
     draw_toast(app);
 }

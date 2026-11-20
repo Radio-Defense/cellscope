@@ -313,6 +313,55 @@ void app_add_meter(App *app, const MeterSample *sample)
     SDL_UnlockMutex(app->mu);
 }
 
+void app_request_remove_meter(App *app, int index)
+{
+    SDL_LockMutex(app->mu);
+    if (index >= 0 && index < app->meter_count) {
+        app->remove_meter_open = true;
+        app->remove_meter_index = index;
+    }
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_cancel_remove_meter(App *app)
+{
+    SDL_LockMutex(app->mu);
+    app->remove_meter_open = false;
+    app->remove_meter_index = -1;
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_confirm_remove_meter(App *app)
+{
+    SDL_LockMutex(app->mu);
+    int index = app->remove_meter_index;
+    if (!app->remove_meter_open || index < 0 || index >= app->meter_count) {
+        app->remove_meter_open = false;
+        app->remove_meter_index = -1;
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    int phys = (app->meter_head + index) % METER_MAX;
+    uint64_t seq = app->meters[phys].seq;
+    for (int j = index; j < app->meter_count - 1; j++) {
+        int dst = (app->meter_head + j) % METER_MAX;
+        int src = (app->meter_head + j + 1) % METER_MAX;
+        app->meters[dst] = app->meters[src];
+    }
+    app->meter_count--;
+    if (app->selected_meter == index) {
+        app->selected_meter = -1;
+        app->selected_meter_ts = 0;
+    } else if (app->selected_meter > index) {
+        app->selected_meter--;
+    }
+    app->remove_meter_open = false;
+    app->remove_meter_index = -1;
+    if (app->session_active) session_write_locked(app);
+    SDL_UnlockMutex(app->mu);
+    app_notify(app, false, "Removed reading %llu Hz", (unsigned long long)seq);
+}
+
 int app_cell_count(App *app)
 {
     SDL_LockMutex(app->mu);
@@ -605,6 +654,7 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->readme_fixture = true;
             app->readme_fixture_mode = strcmp(mode, "live") == 0 ? 2
                                      : strcmp(mode, "best") == 0 ? 3
+                                     : strcmp(mode, "remove") == 0 ? 5
                                                                  : 1;
         } else if (strcmp(a, "--autoplay") == 0) {
             app->autoplay = true;
@@ -945,6 +995,10 @@ static void readme_fixture_seed(App *app)
                    sizeof(app->reader.status));
     app->cell_follow = true;
     app->meter_follow = true;
+    if (app->readme_fixture_mode == 5) {
+        app->remove_meter_open = true;
+        app->remove_meter_index = app->meter_count - 1;
+    }
     SDL_UnlockMutex(app->mu);
 }
 
@@ -2531,7 +2585,9 @@ void app_handle_event(App *app, const SDL_Event *e)
     if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat) {
         switch (e->key.key) {
             case SDLK_ESCAPE:
-                if (app->modal_open) {
+                if (app->remove_meter_open) {
+                    app_cancel_remove_meter(app);
+                } else if (app->modal_open) {
                     SDL_LockMutex(app->mu);
                     app->modal_open = false;
                     SDL_UnlockMutex(app->mu);
@@ -2558,7 +2614,7 @@ void app_handle_event(App *app, const SDL_Event *e)
                 app_export_json(app);
                 break;
             case SDLK_SPACE:
-                if (!app->modal_open) app_toggle_pause(app);
+                if (!app->modal_open && !app->remove_meter_open) app_toggle_pause(app);
                 break;
             default:
                 break;

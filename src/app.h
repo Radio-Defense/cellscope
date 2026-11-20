@@ -202,6 +202,8 @@ typedef struct App {
     bool ever_connected;
     bool modal_open;
     bool modal_checking;
+    bool remove_meter_open;
+    int remove_meter_index;
     bool want_check;
     bool background_retry;
     int64_t last_check_ms;
@@ -292,5 +294,8 @@ int app_meter_count(App *app);
 MeterSample app_meter_at(App *app, int index);
 void app_add_cell(App *app, const CellSample *sample);
 void app_add_meter(App *app, const MeterSample *sample);
+void app_request_remove_meter(App *app, int index);
+void app_confirm_remove_meter(App *app);
+void app_cancel_remove_meter(App *app);
 
 #endif

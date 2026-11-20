@@ -18,6 +18,8 @@ state and a webcam at the same time.
   needed. **CELL SAMPLES** exposes time, operator, band, RAT, PCI, ARFCN,
   downlink/uplink frequencies, TAC, eNB/CID, bandwidth and CA; **READINGS**
   exposes timestamp, screenshot filename, Hz, GHz, confidence and backend.
+  Each reading row starts with a small **×** action; it asks for confirmation in
+  a modal before removing that entry from the current session.
 - **Top centre:** a large play/pause control. CellScope starts paused: the
   webcam, ADB polling, VLM extraction, dataset session and table stay idle until
   you press play. The window opens maximized with its normal title bar visible;
