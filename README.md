@@ -491,7 +491,9 @@ Capture data defaults under `~/.cellscope/datasets/` (or
 The top bar also has **Upload** and **Settings** buttons. **Settings** opens an
 editor for every field in the working-directory `settings.json`; changes are
 saved atomically and apply after restart. **Upload** explains that online
-storage is not implemented yet.
+storage is not implemented yet. The reader-model pill lists every downloaded
+model under `runtime/hf-models` and switches the local inference server to the
+selected one.
 
 ## Training a meter reader with MiniMind-V
 

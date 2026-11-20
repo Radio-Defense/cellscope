@@ -20,6 +20,7 @@ typedef struct {
     int remove_meter_index;
     bool settings_modal_open;
     bool upload_modal_open;
+    bool model_modal_open;
     bool paused;
     bool ever_connected;
     char device_label[128];
@@ -61,6 +62,7 @@ static void snapshot(App *app, UiState *s)
     s->remove_meter_index = app->remove_meter_index;
     s->settings_modal_open = app->settings_modal_open;
     s->upload_modal_open = app->upload_modal_open;
+    s->model_modal_open = app->model_modal_open;
     s->paused = app->paused;
     s->ever_connected = app->ever_connected;
     cs_strlcpy(s->device_label, app->device_label, sizeof(s->device_label));
@@ -122,44 +124,13 @@ static const char *adb_short_state(const UiState *s, char *buf, size_t cap, UiCo
 {
     if (s->adb.state == ADB_STATE_CONNECTED) {
         *color = UI_ACCENT;
-        if (strcmp(s->adb.serial, "DEMO") == 0) {
-            cs_strlcpy(buf, "DEMO PHONE", cap);
-        } else {
-            snprintf(buf, cap, "PHONE · %s",
-                     s->device_label[0] ? s->device_label : s->adb.serial);
-        }
+        cs_strlcpy(buf, "PHONE CONNECTED", cap);
         return buf;
     }
-    switch (s->adb.state) {
-        case ADB_STATE_NO_TOOL:
-            *color = UI_RED;
-            cs_strlcpy(buf, "ADB NOT FOUND", cap);
-            break;
-        case ADB_STATE_UNAUTHORIZED:
-            *color = UI_AMBER;
-            cs_strlcpy(buf, "AUTHORIZE PHONE", cap);
-            break;
-        case ADB_STATE_OFFLINE:
-            *color = UI_AMBER;
-            cs_strlcpy(buf, "PHONE OFFLINE", cap);
-            break;
-        case ADB_STATE_NO_PERMISSION:
-            *color = UI_RED;
-            cs_strlcpy(buf, "USB BLOCKED", cap);
-            break;
-        case ADB_STATE_ERROR:
-            *color = UI_RED;
-            cs_strlcpy(buf, "PHONE ERROR", cap);
-            break;
-        case ADB_STATE_NO_DEVICE:
-            *color = UI_MUTED;
-            cs_strlcpy(buf, "NO PHONE", cap);
-            break;
-        default:
-            *color = UI_FAINT;
-            cs_strlcpy(buf, "PHONE OFF", cap);
-            break;
-    }
+    *color = (s->adb.state == ADB_STATE_NO_TOOL || s->adb.state == ADB_STATE_ERROR)
+                  ? UI_RED
+                  : UI_MUTED;
+    cs_strlcpy(buf, "PHONE DISCONNECTED", cap);
     return buf;
 }
 
@@ -272,8 +243,7 @@ static void draw_header(App *app, UiState *s)
     ui_text_ellipsis(ui, FONT_MEDIUM, rp.x + 20, rp.y + 7, 10.2f, UI_MUTED, rp.w - 28,
                      reader_text);
     if (ui_hover(ui, rp) && ui->mouse_pressed) {
-        app_notify(app, false, "%s", s->reader.detail[0] ? s->reader.detail
-                                                         : "Reader status unavailable.");
+        app_open_model_modal(app);
         ui_consume_click(ui);
     }
     x -= rw + gap;
@@ -297,10 +267,10 @@ static void draw_header(App *app, UiState *s)
         cs_strlcpy(cam_text, "CAMERA BLOCKED", sizeof(cam_text));
         cam_col = UI_RED;
     } else if (app->camera_ok && app->cam.active) {
-        snprintf(cam_text, sizeof(cam_text), "LOCAL CAM · %.22s", app->cam.name);
+        snprintf(cam_text, sizeof(cam_text), "%.22s", app->cam.name);
         cam_col = UI_ACCENT;
     } else {
-        cs_strlcpy(cam_text, "NO LOCAL CAMERA", sizeof(cam_text));
+        cs_strlcpy(cam_text, "NO CAMERA", sizeof(cam_text));
     }
     float cw = ui_text_width(ui, FONT_MEDIUM, 10.2f, cam_text) + 28;
     UiRect cp = ui_rect(x - cw, 18, cw, pill_h);
@@ -1261,6 +1231,65 @@ static void draw_settings_modal(App *app, UiState *s)
         app_save_settings_modal(app);
 }
 
+static void draw_model_modal(App *app, UiState *s)
+{
+    (void)s;
+    Ui *ui = &app->ui;
+    float W = (float)ui->win_w, H = (float)ui->win_h;
+    ui_rect_fill(ui, ui_rect(0, 0, W, H), UI_COLOR(3, 5, 8, 200));
+    float cw = CS_MIN(680.0f, W - 60);
+    float ch = CS_MIN(620.0f, H - 60);
+    UiRect card = ui_rect((W - cw) / 2, (H - ch) / 2, cw, ch);
+    ui_round_rect(ui, ui_rect(card.x - 2, card.y - 2, card.w + 4, card.h + 4), 15,
+                  UI_COLOR(35, 55, 48, 150));
+    ui_panel(ui, card, UI_PANEL);
+    ui_round_rect(ui, ui_rect(card.x + 1, card.y + 1, card.w - 2, 3), 2, UI_ACCENT);
+    ui_text_font(ui, FONT_SEMIBOLD, card.x + 24, card.y + 22, 19.0f, UI_TEXT,
+                 "Local reader model");
+    ui_text_font(ui, FONT_UI, card.x + 24, card.y + 50, 9.4f, UI_MUTED,
+                 "Choose a model already downloaded for local inference.");
+    ui_text_ellipsis(ui, FONT_MONO, card.x + 24, card.y + 68, 7.8f, UI_FAINT,
+                     card.w - 48,
+                     app->settings.hf_model_path[0] ? app->settings.hf_model_path
+                                                     : "No model path configured");
+
+    float y = card.y + 96;
+    int shown = 0;
+    for (int i = 0; i < app->model_count && shown < 12; i++, shown++) {
+        bool current = strcmp(app->model_paths[i], app->settings.hf_model_path) == 0;
+        UiRect row = ui_rect(card.x + 20, y, card.w - 40, 36);
+        bool hover = ui_rect_contains(row, ui->mx, ui->my);
+        ui_round_rect(ui, row, 7,
+                      current ? UI_COLOR(25, 49, 41, 235)
+                              : hover ? UI_COLOR(26, 37, 48, 220)
+                                      : UI_COLOR(12, 19, 26, 220));
+        if (current)
+            ui_round_rect(ui, ui_rect(row.x, row.y + 6, 2, row.h - 12), 1, UI_ACCENT);
+        ui_text_ellipsis(ui, FONT_MONO, row.x + 12, row.y + 11, 9.6f,
+                         current ? UI_ACCENT : UI_TEXT, row.w - 70,
+                         app->model_repos[i]);
+        if (current)
+            ui_text_right(ui, FONT_MONO, row.x + row.w - 12, row.y + 12, 7.6f,
+                          UI_ACCENT, "CURRENT");
+        else
+            ui_text_right(ui, FONT_MONO, row.x + row.w - 12, row.y + 12, 7.6f,
+                          UI_FAINT, "SELECT");
+        if (hover && ui->mouse_pressed) {
+            app_select_hf_model(app, i);
+            ui_consume_click(ui);
+            return;
+        }
+        y += 40;
+    }
+    if (app->model_count == 0)
+        ui_text_center(ui, FONT_UI, card.x + card.w / 2, card.y + 150, 11.0f, UI_FAINT,
+                       "No downloaded Hugging Face models found.");
+
+    UiRect cancel = ui_rect(card.x + card.w - 132, card.y + card.h - 50, 104, 32);
+    if (ui_button(ui, cancel, "Cancel", BUTTON_SECONDARY, true))
+        app_close_model_modal(app);
+}
+
 static void draw_upload_modal(App *app, UiState *s)
 {
     (void)s;
@@ -1294,7 +1323,8 @@ void app_draw(App *app)
 
     ui_background(ui);
     ui->block_interactive = s.modal_open || s.remove_meter_open ||
-                            s.settings_modal_open || s.upload_modal_open;
+                            s.settings_modal_open || s.upload_modal_open ||
+                            s.model_modal_open;
     draw_header(app, &s);
     draw_transport(app, &s);
     draw_runtime_banner(app, &s);
@@ -1307,5 +1337,6 @@ void app_draw(App *app)
     if (s.remove_meter_open) draw_remove_modal(app, &s);
     if (s.settings_modal_open) draw_settings_modal(app, &s);
     if (s.upload_modal_open) draw_upload_modal(app, &s);
+    if (s.model_modal_open) draw_model_modal(app, &s);
     draw_toast(app);
 }

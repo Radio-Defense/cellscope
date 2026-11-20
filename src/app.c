@@ -467,6 +467,130 @@ void app_close_upload_modal(App *app)
     SDL_UnlockMutex(app->mu);
 }
 
+typedef struct {
+    char repo[256];
+    char path[CS_PATH_MAX];
+} ModelEntry;
+
+static int model_entry_cmp(const void *a, const void *b)
+{
+    const ModelEntry *ma = a;
+    const ModelEntry *mb = b;
+    return strcmp(ma->repo, mb->repo);
+}
+
+void app_open_model_modal(App *app)
+{
+    char root[CS_PATH_MAX];
+    SDL_LockMutex(app->mu);
+    if (app->runtime.dir[0]) cs_strlcpy(root, app->runtime.dir, sizeof(root));
+    else {
+        char data[CS_PATH_MAX];
+        if (!cs_app_data_dir(data, sizeof(data))) cs_strlcpy(data, ".", sizeof(data));
+        cs_path_join(root, sizeof(root), data, "runtime");
+    }
+    SDL_UnlockMutex(app->mu);
+
+    char models[CS_PATH_MAX];
+    cs_path_join(models, sizeof(models), root, "hf-models");
+    ModelEntry entries[16];
+    int count = 0;
+#ifdef _WIN32
+    char pattern[CS_PATH_MAX];
+    snprintf(pattern, sizeof(pattern), "%s\\*", models);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            char path[CS_PATH_MAX], cfg[CS_PATH_MAX];
+            cs_path_join(path, sizeof(path), models, fd.cFileName);
+            cs_path_join(cfg, sizeof(cfg), path, "config.json");
+            if (!cs_file_exists(cfg) || count >= 16) continue;
+            char repo[256];
+            cs_strlcpy(repo, fd.cFileName, sizeof(repo));
+            char *sep = strstr(repo, "__");
+            if (sep) { *sep = '/'; memmove(sep + 1, sep + 2, strlen(sep + 2) + 1); }
+            cs_strlcpy(entries[count].repo, repo, sizeof(entries[count].repo));
+            cs_strlcpy(entries[count].path, path, sizeof(entries[count].path));
+            count++;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    DIR *d = opendir(models);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL && count < 16) {
+            if (de->d_name[0] == '.') continue;
+            char path[CS_PATH_MAX], cfg[CS_PATH_MAX];
+            cs_path_join(path, sizeof(path), models, de->d_name);
+            cs_path_join(cfg, sizeof(cfg), path, "config.json");
+            if (!cs_is_dir(path) || !cs_file_exists(cfg)) continue;
+            char repo[256];
+            cs_strlcpy(repo, de->d_name, sizeof(repo));
+            char *sep = strstr(repo, "__");
+            if (sep) {
+                *sep = '/';
+                memmove(sep + 1, sep + 2, strlen(sep + 2) + 1);
+            }
+            cs_strlcpy(entries[count].repo, repo, sizeof(entries[count].repo));
+            cs_strlcpy(entries[count].path, path, sizeof(entries[count].path));
+            count++;
+        }
+        closedir(d);
+    }
+#endif
+    qsort(entries, (size_t)count, sizeof(entries[0]), model_entry_cmp);
+    SDL_LockMutex(app->mu);
+    app->model_count = count;
+    for (int i = 0; i < count; i++) {
+        cs_strlcpy(app->model_repos[i], entries[i].repo, sizeof(app->model_repos[i]));
+        cs_strlcpy(app->model_paths[i], entries[i].path, sizeof(app->model_paths[i]));
+    }
+    app->model_modal_open = true;
+    app->settings_modal_open = false;
+    app->upload_modal_open = false;
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_close_model_modal(App *app)
+{
+    SDL_LockMutex(app->mu);
+    app->model_modal_open = false;
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_select_hf_model(App *app, int index)
+{
+    char repo[256], path[CS_PATH_MAX], err[512] = {0};
+    SDL_LockMutex(app->mu);
+    if (index < 0 || index >= app->model_count) {
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    cs_strlcpy(repo, app->model_repos[index], sizeof(repo));
+    cs_strlcpy(path, app->model_paths[index], sizeof(path));
+    AppSettings next = app->settings;
+    cs_strlcpy(next.reader_backend, "hf", sizeof(next.reader_backend));
+    cs_strlcpy(next.hf_model, repo, sizeof(next.hf_model));
+    cs_strlcpy(next.hf_model_path, path, sizeof(next.hf_model_path));
+    if (!settings_save(&next, err, sizeof(err))) {
+        SDL_UnlockMutex(app->mu);
+        app_notify(app, true, "Could not save the reader model: %s", err);
+        return;
+    }
+    app->settings = next;
+    app->model_modal_open = false;
+    app->prefer_minimind = false;
+    app->vlm_switched = false;
+    app->reload_runtime = true;
+    app->retry_runtime = true;
+    SDL_UnlockMutex(app->mu);
+    app_notify(app, false, "Loading local reader model %s…", repo);
+}
+
 void app_request_remove_meter(App *app, int index)
 {
     SDL_LockMutex(app->mu);
@@ -812,6 +936,7 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
                                      : strcmp(mode, "remove") == 0 ? 5
                                      : strcmp(mode, "settings") == 0 ? 6
                                      : strcmp(mode, "upload") == 0 ? 7
+                                     : strcmp(mode, "model") == 0 ? 8
                                                                  : 1;
         } else if (strcmp(a, "--autoplay") == 0) {
             app->autoplay = true;
@@ -1313,6 +1438,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     if (app->auto_connect && !app->demo && !app->readme_fixture) app->want_check = true;
     if (app->readme_fixture_mode == 6) app_open_settings_modal(app);
     else if (app->readme_fixture_mode == 7) app_open_upload_modal(app);
+    else if (app->readme_fixture_mode == 8) app_open_model_modal(app);
 
     if (!app->readme_fixture) {
         app->adb_thread = SDL_CreateThread(cellscope_adb_thread, "adb-poller", app);
@@ -1780,6 +1906,19 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
         int failures = 0;
         while (!SDL_GetAtomicInt(&app->quit)) {
             SDL_Delay(3000);
+            bool reload = false;
+            SDL_LockMutex(app->mu);
+            reload = app->reload_runtime;
+            app->reload_runtime = false;
+            SDL_UnlockMutex(app->mu);
+            if (reload) {
+                server_stop(&app->server);
+                SDL_LockMutex(app->mu);
+                app->prefer_minimind = false;
+                app->vlm_switched = false;
+                SDL_UnlockMutex(app->mu);
+                break;
+            }
             if (server_healthy(&app->server)) {
                 failures = 0;
                 continue;
@@ -2994,6 +3133,11 @@ void app_handle_event(App *app, const SDL_Event *e)
         if (e->type == SDL_EVENT_KEY_DOWN) {
             if (e->key.key == SDLK_ESCAPE || e->key.key == SDLK_RETURN)
                 app_close_upload_modal(app);
+            return;
+        }
+    } else if (app->model_modal_open) {
+        if (e->type == SDL_EVENT_KEY_DOWN) {
+            if (e->key.key == SDLK_ESCAPE) app_close_model_modal(app);
             return;
         }
     }

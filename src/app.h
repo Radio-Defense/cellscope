@@ -207,6 +207,11 @@ typedef struct App {
     int remove_meter_index;
     bool settings_modal_open;
     bool upload_modal_open;
+    bool model_modal_open;
+    int model_count;
+    char model_repos[16][256];
+    char model_paths[16][CS_PATH_MAX];
+    bool reload_runtime;
     int settings_focus;
     char settings_edit[7][CS_PATH_MAX];
     char settings_target[CS_PATH_MAX];
@@ -304,5 +309,8 @@ void app_close_settings_modal(App *app);
 void app_save_settings_modal(App *app);
 void app_open_upload_modal(App *app);
 void app_close_upload_modal(App *app);
+void app_open_model_modal(App *app);
+void app_close_model_modal(App *app);
+void app_select_hf_model(App *app, int index);
 
 #endif
