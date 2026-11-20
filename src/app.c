@@ -2034,7 +2034,23 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             continue;
         }
 
-        if (!mock) {
+        if (!mock && candidate) {
+            /* A DSP candidate is already screen evidence. Skip the separate
+             * presence call so frequency reads arrive close enough together
+             * to reach consensus while the meter is still in view. */
+            SDL_LockMutex(app->mu);
+            if (!app->reader.screen_visible) {
+                app->reader.screen_visible = true;
+                app->reader.visible = false;
+                app->reader.display_until_ms = 0;
+                app->reader.hz = 0;
+                app->reader.confidence = 0;
+                app->reader.raw[0] = '\0';
+            }
+            app->reader.busy = true;
+            app->reader.error[0] = '\0';
+            SDL_UnlockMutex(app->mu);
+        } else if (!mock) {
             bool display_visible = false;
             char derr[512] = {0};
             if (!vlm_detect(&app->vlm, rgb, rw, rh, &display_visible, derr,

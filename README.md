@@ -341,9 +341,11 @@ frame is scored for:
 - blown highlights (glare)
 - crushed shadows
 
-The reader runs a presence check once per second (a yes/no VLM question on a
-cropped guide image), then reads the frequency only from DSP-passing candidate
-frames. Before inference, a DSP gate scores the frame's central guide region
+The reader checks presence once per second only when no candidate frame is
+available. DSP-passing candidate frames are read directly, without spending an
+extra VLM call on presence, so multiple frequency reads can reach consensus
+while the meter is still in view. A presence check resumes once candidates stop
+arriving, to detect that the screen has left. Before inference, a DSP gate scores the frame's central guide region
 and retains only frames that are sharp, high-contrast, glare-free, well exposed
 and temporally stable. Bad frames are discarded immediately; only one "latest"
 frame is kept for the presence check, so there is no all-frame archive. The
