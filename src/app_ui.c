@@ -844,7 +844,7 @@ static void draw_cell_panel(App *app, UiState *s, UiRect r)
         ui_text_font(ui, FONT_MONO, r.x + r.w - 86, r.y + 12, 8.8f, UI_FAINT, live);
     } else {
         UiRect rec = ui_rect(r.x + r.w - 104, r.y + 8, 88, 24);
-        if (ui_button(ui, rec, "Reconnect", BUTTON_SECONDARY, true)) app_request_check(app);
+        if (ui_button(ui, rec, "Connect ADB", BUTTON_SECONDARY, true)) app_request_check(app);
     }
     ui_line(ui, r.x + 12, r.y + 39.5f, r.x + r.w - 12, r.y + 39.5f, UI_BORDER_SOFT, 1);
     draw_cell_rows(app, s, ui_rect(r.x + 8, r.y + 44, r.w - 16, r.h - 50));
