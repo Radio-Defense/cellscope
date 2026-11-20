@@ -1,0 +1,10 @@
+{
+  "name": "cellscope",
+  "version-string": "0.1.0",
+  "description": "Android cell data + webcam frequency-meter reader",
+  "dependencies": [
+    "sdl3",
+    "freetype",
+    "curl"
+  ]
+}

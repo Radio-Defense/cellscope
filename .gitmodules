@@ -1,0 +1,3 @@
+[submodule "third_party/minimind-v"]
+	path = third_party/minimind-v
+	url = https://github.com/jingyaogong/minimind-v

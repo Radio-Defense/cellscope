@@ -1,0 +1,131 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(CellScope VERSION 0.1.0 LANGUAGES C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+
+option(CELLSCOPE_BUILD_TESTS "Build the unit tests" ON)
+option(CELLSCOPE_WIN_CONSOLE "Keep a console window on Windows for diagnostics" ON)
+
+find_package(SDL3 CONFIG QUIET)
+if(NOT SDL3_FOUND)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+  add_library(SDL3::SDL3 ALIAS PkgConfig::SDL3)
+endif()
+
+find_package(Freetype REQUIRED)
+find_package(CURL REQUIRED)
+find_package(Threads REQUIRED)
+
+add_library(cellcore STATIC
+  src/util.c
+  src/cellular.c
+  src/telephony.c
+  src/meter.c
+  src/quality.c
+)
+target_include_directories(cellcore PUBLIC src)
+target_compile_definitions(cellcore PUBLIC
+  _CRT_SECURE_NO_WARNINGS
+  $<$<CONFIG:Release>:NDEBUG>
+)
+if(MSVC)
+  target_compile_options(cellcore PRIVATE /W3)
+else()
+  target_compile_options(cellcore PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+set(CELLSCOPE_SOURCES
+  src/main.c
+  src/app.c
+  src/app_ui.c
+  src/train.c
+  src/ui.c
+  src/fonts.c
+  src/proc.c
+  src/adb.c
+  src/camera.c
+  src/vlm.c
+  src/stb_impl.c
+)
+
+add_executable(cellscope ${CELLSCOPE_SOURCES})
+target_link_libraries(cellscope PRIVATE
+  cellcore
+  SDL3::SDL3
+  Freetype::Freetype
+  CURL::libcurl
+  Threads::Threads
+)
+target_include_directories(cellscope PRIVATE
+  src
+  third_party
+)
+target_compile_definitions(cellscope PRIVATE
+  CELLSCOPE_VERSION="${PROJECT_VERSION}"
+  CELLSCOPE_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+  CELLSCOPE_SOURCE_SCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+  $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
+)
+if(APPLE)
+  target_compile_definitions(cellscope PRIVATE GL_SILENCE_DEPRECATION)
+  set_target_properties(cellscope PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "CellScope"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.cellscope.app"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+  )
+endif()
+if(WIN32 AND NOT CELLSCOPE_WIN_CONSOLE)
+  set_target_properties(cellscope PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+if(MSVC)
+  target_compile_options(cellscope PRIVATE /W3)
+else()
+  target_compile_options(cellscope PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+set_source_files_properties(src/stb_impl.c PROPERTIES COMPILE_OPTIONS "")
+
+# Assets live next to the executable during development and inside the
+# macOS bundle's Resources directory for distribution.
+add_custom_command(TARGET cellscope POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+          "$<TARGET_FILE_DIR:cellscope>/assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+          "$<TARGET_FILE_DIR:cellscope>/scripts"
+  COMMENT "Copying CellScope assets"
+)
+
+if(APPLE)
+  find_program(CODESIGN_EXECUTABLE codesign)
+  if(CODESIGN_EXECUTABLE)
+    add_custom_command(TARGET cellscope POST_BUILD
+      COMMAND ${CODESIGN_EXECUTABLE} --force --deep --sign - "$<TARGET_BUNDLE_DIR:cellscope>"
+      COMMENT "Ad-hoc signing CellScope.app for camera permission"
+    )
+  endif()
+endif()
+
+install(TARGETS cellscope
+  BUNDLE DESTINATION .
+  RUNTIME DESTINATION bin
+)
+install(DIRECTORY assets/ DESTINATION share/cellscope/assets)
+install(DIRECTORY scripts/ DESTINATION share/cellscope/scripts)
+
+if(CELLSCOPE_BUILD_TESTS)
+  enable_testing()
+  add_executable(test_core
+    tests/test_core.c
+  )
+  target_link_libraries(test_core PRIVATE cellcore)
+  target_include_directories(test_core PRIVATE src)
+  add_test(NAME core COMMAND test_core)
+endif()
