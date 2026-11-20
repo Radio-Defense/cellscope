@@ -17,7 +17,7 @@ state and a webcam at the same time.
   fixed column headers, zebra rows, and vertical/horizontal scrollbars as
   needed. **CELL SAMPLES** exposes time, operator, band, RAT, PCI, ARFCN,
   downlink/uplink frequencies, TAC, eNB/CID, bandwidth and CA; **READINGS**
-  exposes timestamp, screenshot filename, Hz, GHz, confidence and backend.
+  exposes timestamp, screenshot filename, Hz, confidence and backend.
   Each reading row starts with a small **×** action; it asks for confirmation in
   a modal before removing that entry from the current session.
 - **Top centre:** a large play/pause control. CellScope starts paused: the

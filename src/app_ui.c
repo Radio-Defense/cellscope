@@ -900,7 +900,7 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
     Ui *ui = &app->ui;
     static const ListColumn cols[] = {
         {"", 30}, {"TIME", 62}, {"SCREENSHOT", 190}, {"FREQUENCY (HZ)", 126},
-        {"GHz", 92}, {"CONF", 52}, {"BACKEND", 112},
+        {"CONF", 52}, {"BACKEND", 112},
     };
     const int ncols = (int)CS_ARRAY_LEN(cols);
     const float row_h = 26.0f, header_h = 23.0f, sb_w = 7.0f, sb_h = 7.0f;
@@ -943,7 +943,7 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
     ui_rect_fill(ui, head, UI_COLOR(17, 25, 33, 245));
     float hx = head.x + 8 - app->meter_scroll_x;
     for (int c = 0; c < ncols; c++) {
-        bool right = (c == 3 || c == 4 || c == 5);
+        bool right = (c == 3 || c == 4);
         if (right)
             ui_text_right(ui, FONT_MONO, hx + cols[c].width - 10, head.y + 7, 7.6f,
                           UI_FAINT, cols[c].label);
@@ -975,9 +975,8 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
         if (newest) ui_rect_fill(ui, ui_rect(row.x, row.y + 4, 2, row.h - 8),
                                  UI_ACCENT);
 
-        char hz[64], eng[64], conf[16];
+        char hz[64], conf[16];
         cs_group_u64(m.hz, hz, sizeof(hz));
-        cs_format_eng(m.hz, eng, sizeof(eng));
         snprintf(conf, sizeof(conf), "%d%%", (int)(m.confidence * 100.0));
         const char *shot = ui_shot_name(&m);
         float x = view.x + 8 - app->meter_scroll_x;
@@ -1005,13 +1004,10 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
                       UI_TEXT, hz);
         x += cols[3].width;
         ui_text_right(ui, FONT_MONO, x + cols[4].width - 10, row.y + 8, 8.4f,
-                      UI_FAINT, eng);
-        x += cols[4].width;
-        ui_text_right(ui, FONT_MONO, x + cols[5].width - 10, row.y + 8, 8.4f,
                       UI_FAINT, conf);
-        x += cols[5].width;
+        x += cols[4].width;
         ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.2f, UI_FAINT,
-                         cols[6].width - 10, m.backend[0] ? m.backend : "reader");
+                         cols[5].width - 10, m.backend[0] ? m.backend : "reader");
 
         if (ui_rect_contains(row, ui->mx, ui->my) && ui->mouse_pressed) {
             app->selected_meter_ts = m.ts_ms;
