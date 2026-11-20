@@ -190,8 +190,14 @@ The reader prompt asks for JSON only:
 
 `reading` is converted to Hz in C. Supported units: `Hz`, `kHz`, `MHz`, `GHz`.
 If a bare number has no unit, `--unit` (default `MHz`) is used. Tesseract is a
-fallback, not a VLM; it OCRs the digit crop and the bottom/right unit strip, and
-is labeled as such in the UI.
+fallback, not a VLM. It now detects horizontal text bands instead of taking the
+first number in the frame, then tries eight mirror/rotation combinations
+(0°, 90°, 180°, 270°, each normal and horizontally mirrored). Candidate
+frequencies are scored by digits, unit and label context; implausible
+reflection artifacts are rejected instead of being recorded. This handles
+mirrored front-camera frames and sideways/upside-down screens. Set
+`CELLSCOPE_OCR_DEBUG=1` to keep `ocr_debug.txt`, `ocr_frame.png` and band crops
+under the capture directory's `.ocr` folder.
 
 ### Burst capture and best-frame selection
 
@@ -302,6 +308,9 @@ IMG_0014.jpg,940.0MHz
   different distances, lighting, glare, and backgrounds. Include the unit
   printed on the display in frame. 200+ varied images is a better starting
   point than dozens.
+- Dataset augmentation already adds horizontal mirroring and 90°/180°/270°
+  rotations (plus small handheld angles, scale/offset, glare and blur), so the
+  trained VLM sees mirrored and rotated screens too.
 - A single CSV is auto-detected. Use `--train-csv` if there are several.
 
 ### 2. Runtime
@@ -485,8 +494,9 @@ CELLSCOPE_SKIP_MODELS=1 \
   `dumpsys`; CellScope cannot invent them.
 - Frequencies are derived from 3GPP band tables for common FDD/TDD bands.
   Unknown bands are shown as `—` rather than guessed.
-- The Tesseract fallback is not a VLM and is more sensitive to glare/angle.
-  Prefer Ollama or llama.cpp for production.
+- The Tesseract fallback is not a VLM. It handles mirrored and rotated frames,
+  but heavy glare/reflections can still make it refuse a reading rather than
+  risk a false one. Prefer MiniMind for production.
 - Lists are in memory. Use **Export CSV** to persist; the CSV includes the full
   anonymized `wifi` semicolon string.
 - The Wi-Fi column uses Android's cached scan results. If Wi-Fi/location is off

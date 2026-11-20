@@ -290,7 +290,7 @@ MeterTrackAction meter_tracker_update(MeterTracker *t, const MeterReading *r, in
         return METER_TRACK_NOOP;
     }
 
-    double tolerance = CS_MAX(80.0, r->hz * 0.00002);
+    double tolerance = CS_MAX(80.0, r->hz * 0.0002);
     if (t->have_candidate && fabs(r->hz - t->candidate_hz) <= tolerance) {
         t->stable_count++;
         t->candidate_hz = (t->candidate_hz * 0.7) + (r->hz * 0.3);

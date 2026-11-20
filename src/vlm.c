@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +29,8 @@ static const char *k_prompt =
     "You are an optical reader for a handheld pocket frequency meter that a person "
     "is holding up to a webcam. Look at the attached camera frame. A reading is "
     "usable only when the numeric frequency display is clearly visible and in "
-    "focus; the screen may be small, angled, or held at a distance. Read the main "
+    "focus; the screen may be small, angled, held at a distance, mirrored, or "
+    "rotated. Mentally correct the orientation before reading. Read the main "
     "measured frequency, not model numbers, channel names, battery icons, voltage or "
     "power fields, or other labels. If several numbers are visible, use the largest, "
     "most central frequency display. Read the digits exactly as shown; never invent "
@@ -603,6 +605,21 @@ static uint8_t *ocr_preprocess(const uint8_t *rgb, int w, int h, int *ow, int *o
     return ocr_preprocess_roi(rgb, w, h, 0.72f, 0.50f, 2, ow, oh);
 }
 
+static void ocr_debug(VlmConfig *cfg, const char *fmt, ...)
+{
+    if (!getenv("CELLSCOPE_OCR_DEBUG") || !cfg->work_dir[0]) return;
+    char path[CS_PATH_MAX];
+    cs_path_join(path, sizeof(path), cfg->work_dir, "ocr_debug.txt");
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
+
 static double unit_scale(const char *unit)
 {
     if (!unit) return 0;
@@ -680,6 +697,265 @@ static void detect_unit_ocr(VlmConfig *cfg, const uint8_t *rgb, int w, int h, ch
     }
 }
 
+typedef struct {
+    int y0, y1;
+    double score;
+} OcrBand;
+
+static int cmp_band(const void *a, const void *b)
+{
+    const OcrBand *x = a, *y = b;
+    if (x->score < y->score) return 1;
+    if (x->score > y->score) return -1;
+    return 0;
+}
+
+/* Find horizontal text bands by row-to-row edge density. This works for
+ * low-contrast/reflective displays where a simple dark-pixel count is
+ * dominated by the camera background. */
+static int ocr_find_bands(const uint8_t *gray, int w, int h, OcrBand *out, int max)
+{
+    if (!gray || w < 32 || h < 32) return 0;
+    int *ink = calloc((size_t)h, sizeof(int));
+    if (!ink) return 0;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = gray + (size_t)y * w;
+        int n = 0;
+        int prev = row[0];
+        for (int x = 1; x < w; x++) {
+            int d = row[x] - prev;
+            if (d < 0) d = -d;
+            if (d > 10) n++;
+            prev = row[x];
+        }
+        ink[y] = n;
+    }
+    int thr = CS_MAX(8, w / 200);
+    int count = 0, y = 0;
+    while (y < h && count < max) {
+        while (y < h && ink[y] < thr) y++;
+        if (y >= h) break;
+        int start = y;
+        int last_ink = y;
+        while (y < h) {
+            if (ink[y] >= thr) {
+                last_ink = y;
+            } else if (y - last_ink > 5) {
+                break;
+            }
+            y++;
+        }
+        int end = last_ink;
+        int band_h = end - start + 1;
+        if (band_h >= 8 && band_h <= h / 2 + 2) {
+            long sum = 0;
+            for (int k = start; k <= end; k++) sum += ink[k];
+            out[count].y0 = start;
+            out[count].y1 = end;
+            out[count].score = (double)sum * (1.0 + band_h * 0.012);
+            count++;
+        }
+        y = end + 1;
+    }
+    free(ink);
+    qsort(out, (size_t)count, sizeof(*out), cmp_band);
+    return count;
+}
+
+/* 0=identity, 1=mirror, 2=180, 3=mirror+180, 4=90cw, 5=270cw,
+ * 6=mirror+90, 7=mirror+270 */
+static uint8_t *ocr_transform(const uint8_t *src, int w, int h, int mode, int *ow, int *oh)
+{
+    if (mode == 0) {
+        uint8_t *copy = malloc((size_t)w * h);
+        if (!copy) return NULL;
+        memcpy(copy, src, (size_t)w * h);
+        *ow = w;
+        *oh = h;
+        return copy;
+    }
+    if (mode == 1 || mode == 3) {
+        uint8_t *dst = malloc((size_t)w * h);
+        if (!dst) return NULL;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                int sy = (mode == 3) ? h - 1 - y : y;
+                int sx = (mode == 1) ? w - 1 - x : x;
+                dst[(size_t)y * w + x] = src[(size_t)sy * w + sx];
+            }
+        *ow = w;
+        *oh = h;
+        return dst;
+    }
+    if (mode == 2) {
+        uint8_t *dst = malloc((size_t)w * h);
+        if (!dst) return NULL;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                dst[(size_t)y * w + x] = src[(size_t)(h - 1 - y) * w + (w - 1 - x)];
+        *ow = w;
+        *oh = h;
+        return dst;
+    }
+    int cw = h, ch = w;
+    uint8_t *dst = malloc((size_t)cw * ch);
+    if (!dst) return NULL;
+    for (int y = 0; y < ch; y++) {
+        for (int x = 0; x < cw; x++) {
+            int sx, sy;
+            if (mode == 4) {          /* rotate 90 CW */
+                sx = w - 1 - y;
+                sy = x;
+            } else if (mode == 5) {   /* rotate 270 CW */
+                sx = y;
+                sy = h - 1 - x;
+            } else if (mode == 6) {   /* mirror + 90 */
+                sx = y;
+                sy = x;
+            } else {                  /* mirror + 270 */
+                sx = w - 1 - y;
+                sy = h - 1 - x;
+            }
+            dst[(size_t)y * cw + x] = src[(size_t)sy * w + sx];
+        }
+    }
+    *ow = cw;
+    *oh = ch;
+    return dst;
+}
+
+static int digit_count(const char *s)
+{
+    int n = 0;
+    for (; s && *s; s++)
+        if (isdigit((unsigned char)*s)) n++;
+    return n;
+}
+
+static bool ocr_parse_text(const char *text, const char *default_unit, MeterReading *out,
+                           int *score)
+{
+    if (!text || !*text) return false;
+    char low[4096];
+    cs_strlcpy(low, text, sizeof(low));
+    cs_lower(low);
+    /* Tesseract commonly reads the final z of MHz/GHz/kHz as 2. */
+    for (char *p = low; (p = strstr(p, "mh2")) != NULL; p += 3)
+        if (!isalnum((unsigned char)p[3])) p[2] = 'z';
+    for (char *p = low; (p = strstr(p, "gh2")) != NULL; p += 3)
+        if (!isalnum((unsigned char)p[3])) p[2] = 'z';
+    for (char *p = low; (p = strstr(p, "kh2")) != NULL; p += 3)
+        if (!isalnum((unsigned char)p[3])) p[2] = 'z';
+    for (char *p = low; (p = strstr(p, "nhz")) != NULL; p += 3)
+        p[0] = 'm';
+    for (char *p = low; (p = strstr(p, "whz")) != NULL; p += 3)
+        p[0] = 'm';
+    const char *start = low;
+    char *eq = strstr(low, "req");
+    if (!eq) eq = strstr(low, "eq");
+    if (eq) start = eq + 2;
+    char candidate[4096];
+    size_t co = 0;
+    for (const char *p = start; *p && co + 1 < sizeof(candidate); p++) {
+        if (!isspace((unsigned char)*p)) candidate[co++] = *p;
+    }
+    candidate[co] = '\0';
+    char raw_saved[256];
+    cs_strlcpy(raw_saved, text, sizeof(raw_saved));
+    MeterReading r;
+    if (!meter_parse_text(candidate, default_unit, &r) || !r.visible) return false;
+    if (r.hz < 1e6 || r.hz > 1e11) return false;
+
+    /* Inspect the first numeric token: reject the common OCR failure where a
+     * reflection produces leading zeros and an implausible huge value. */
+    const char *num = candidate;
+    while (*num && !isdigit((unsigned char)*num)) num++;
+    int int_digits = 0;
+    while (num[int_digits] >= '0' && num[int_digits] <= '9') int_digits++;
+    bool leading_zero = int_digits > 1 && num[0] == '0';
+    bool unit = cs_contains_ci(candidate, "hz");
+    if (leading_zero) return false;
+    /* A unit-less OCR is a fallback; do not let a reflection turn 2.5 GHz
+     * into 52 GHz. */
+    if (!unit && r.hz > 12e9) return false;
+
+    int digits = digit_count(candidate);
+    if (digits < 4) return false;
+    int sc = digits + (unit ? 8 : 0);
+    if (eq || strstr(low, "freq")) sc += 4;
+    if (r.hz >= 1e6 && r.hz <= 1e11) sc += 2;
+    *out = r;
+    cs_strlcpy(out->raw, raw_saved, sizeof(out->raw));
+    if (out->confidence <= 0.0 || out->confidence > 0.9) out->confidence = 0.56;
+    if (score) *score = sc;
+    return true;
+}
+
+/* Try one orientation: locate horizontal bands, OCR each, and keep the best
+ * plausible frequency. Returns true for a high-confidence hit. */
+static bool ocr_try_orientation(VlmConfig *cfg, const uint8_t *gray, int w, int h,
+                                int mode, const char *default_unit, MeterReading *best,
+                                int *best_score, int *calls)
+{
+    int ow = 0, oh = 0;
+    uint8_t *img = ocr_transform(gray, w, h, mode, &ow, &oh);
+    if (!img) return false;
+    OcrBand bands[12];
+    int nb = ocr_find_bands(img, ow, oh, bands, 12);
+    bool strong = false;
+    ocr_debug(cfg, "=== orientation %d: %d bands on %dx%d ===", mode, nb, ow, oh);
+    for (int b = 0; b < nb && b < 4; b++) {
+        int pad = 8;
+        int y0 = CS_MAX(0, bands[b].y0 - pad);
+        int y1 = CS_MIN(oh - 1, bands[b].y1 + pad);
+        int bh = y1 - y0 + 1;
+        if (bh < 12) continue;
+        char path[CS_PATH_MAX];
+        cs_path_join(path, sizeof(path), cfg->work_dir, "ocr_band.png");
+        if (!stbi_write_png(path, ow, bh, 1, img + (size_t)y0 * ow, ow)) continue;
+        if (getenv("CELLSCOPE_OCR_DEBUG")) {
+            char dbg[CS_PATH_MAX];
+            snprintf(dbg, sizeof(dbg), "%s/ocr_band_%d_%d.png", cfg->work_dir, mode, b);
+            stbi_write_png(dbg, ow, bh, 1, img + (size_t)y0 * ow, ow);
+        }
+        ocr_debug(cfg, "band %d y=%d..%d score=%.1f", b, y0, y1, bands[b].score);
+        char text[4096] = {0};
+        for (int pass = 0; pass < 2; pass++) {
+            const char *psm = pass == 0 ? "7" : "6";
+            const char *argv[] = {cfg->tool_path, "ocr_band.png", "stdout", "--psm",
+                                  psm, NULL};
+            char err[256];
+            int code = -1;
+            bool timed_out = false;
+            if (calls) (*calls)++;
+            if (!proc_run_in(cfg->work_dir, argv, text, sizeof(text), 5000, &code,
+                             &timed_out, err, sizeof(err)) ||
+                timed_out)
+                continue;
+            ocr_debug(cfg, "  psm %s => %s", psm, text);
+            MeterReading r;
+            int score = 0;
+            if (ocr_parse_text(text, default_unit, &r, &score)) {
+                ocr_debug(cfg, "    candidate mode=%d score=%d hz=%.0f raw=%s", mode,
+                          score, r.hz, r.raw);
+                if (score > *best_score) {
+                    *best = r;
+                    *best_score = score;
+                }
+                bool has_unit = cs_contains_ci(text, "hz");
+                if (has_unit && digit_count(text) >= 6 && score >= 14) {
+                    strong = true;
+                    break;
+                }
+                break;
+            }
+        }
+        if (strong) break;
+    }
+    free(img);
+    return strong;
+}
+
 static bool tesseract_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h,
                            const char *default_unit, MeterReading *out, char *err,
                            size_t err_cap)
@@ -698,51 +974,47 @@ static bool tesseract_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h,
         snprintf(err, err_cap, "Could not preprocess frame");
         return false;
     }
-    char png_path[CS_PATH_MAX];
-    cs_path_join(png_path, sizeof(png_path), cfg->work_dir, "ocr_frame.png");
-    int wrote = stbi_write_png(png_path, ow, oh, 1, gray, ow);
+    if (getenv("CELLSCOPE_OCR_DEBUG")) {
+        char dbg[CS_PATH_MAX];
+        cs_path_join(dbg, sizeof(dbg), cfg->work_dir, "ocr_frame.png");
+        stbi_write_png(dbg, ow, oh, 1, gray, ow);
+    }
+    MeterReading best;
+    memset(&best, 0, sizeof(best));
+    int best_score = -1;
+    int calls = 0;
+    int64_t started = cs_now_ms();
+    bool strong = false;
+    /* Normal orientation first; mirror next because front-camera previews are
+     * commonly mirrored; then 180/flipped and finally quarter turns. */
+    const int modes[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    for (size_t i = 0; i < CS_ARRAY_LEN(modes); i++) {
+        if (ocr_try_orientation(cfg, gray, ow, oh, modes[i],
+                                default_unit ? default_unit : "MHz", &best, &best_score,
+                                &calls)) {
+            strong = true;
+            break;
+        }
+        if (cs_now_ms() - started > 15000 || calls >= 40) break;
+    }
     free(gray);
-    if (!wrote) {
-        snprintf(err, err_cap, "Could not write %s", png_path);
+    if (best_score < 12) {
+        snprintf(err, err_cap, "OCR found no readable frequency");
         return false;
     }
-
-    const char *modes[] = {"7", "6", "11"};
-    for (size_t i = 0; i < CS_ARRAY_LEN(modes); i++) {
-        const char *argv[] = {cfg->tool_path, "ocr_frame.png", "stdout", "--psm", modes[i],
-                              NULL};
-        char ocr_out[4096];
-        char ocr_err[256];
-        int code = -1;
-        bool timed_out = false;
-        if (!proc_run_in(cfg->work_dir, argv, ocr_out, sizeof(ocr_out), 6000, &code,
-                         &timed_out, ocr_err, sizeof(ocr_err))) {
-            snprintf(err, err_cap, "Tesseract failed to start: %s", ocr_err);
-            return false;
-        }
-        if (timed_out) {
-            snprintf(err, err_cap, "Tesseract timed out");
-            return false;
-        }
-        if (ocr_out[0] && meter_parse_model_output(ocr_out, default_unit, out)) {
-            if (out->confidence <= 0.0 || out->confidence > 0.9) out->confidence = 0.55;
-            if (out->hz < 100000.0) continue;
-            if (!cs_contains_ci(ocr_out, "hz")) {
-                char unit[8];
-                detect_unit_ocr(cfg, rgb, w, h, unit, sizeof(unit));
-                if (unit[0]) {
-                    double from = unit_scale(out->unit[0] ? out->unit : default_unit);
-                    double to = unit_scale(unit);
-                    if (from > 0 && to > 0) out->hz = out->hz / from * to;
-                    cs_strlcpy(out->unit, unit, sizeof(out->unit));
-                }
-            }
-            err[0] = '\0';
-            return true;
+    if (!cs_contains_ci(best.raw, "hz") && !strong) {
+        char unit[8];
+        detect_unit_ocr(cfg, rgb, w, h, unit, sizeof(unit));
+        if (unit[0]) {
+            double from = unit_scale(best.unit[0] ? best.unit : default_unit);
+            double to = unit_scale(unit);
+            if (from > 0 && to > 0) best.hz = best.hz / from * to;
+            cs_strlcpy(best.unit, unit, sizeof(best.unit));
         }
     }
-    snprintf(err, err_cap, "OCR found no readable frequency");
-    return false;
+    *out = best;
+    err[0] = '\0';
+    return true;
 }
 
 double vlm_demo_hz(int64_t now_ms)

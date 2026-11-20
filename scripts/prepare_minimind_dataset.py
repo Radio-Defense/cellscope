@@ -19,9 +19,10 @@ import sys
 DEFAULT_PROMPT = (
     "You are an optical reader for a bench frequency meter. Look at the attached "
     "camera frame. A reading is usable only when a numeric frequency display is "
-    "clearly visible and in focus. Read the digits exactly as shown; never invent "
-    "or autocorrect digits. Determine the unit printed next to the display (Hz, "
-    "kHz, MHz or GHz). Respond with JSON only, no markdown, in exactly this form:\n"
+    "clearly visible and in focus. The frame may be mirrored or rotated; mentally "
+    "correct the orientation before reading. Read the digits exactly as shown; never "
+    "invent or autocorrect digits. Determine the unit printed next to the display "
+    "(Hz, kHz, MHz or GHz). Respond with JSON only, no markdown, in exactly this form:\n"
     '{"visible":true,"reading":"123.456789","unit":"MHz","confidence":0.93}\n'
     "If no display is readable, or it is blurred, cropped, angled or ambiguous, "
     'respond {"visible":false,"reading":"","unit":"","confidence":0.0}. '
@@ -64,9 +65,21 @@ def augment_image(image, rng):
     """Simulate a pocket meter held up to a webcam: small rotations, distance,
     off-centre framing, glare and focus changes. Kept moderate so the digits
     remain readable (the target is still the positive reading)."""
-    from PIL import Image, ImageEnhance, ImageFilter
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
     out = image.convert("RGB")
+    # Front-camera previews are often mirrored; phones are also held sideways
+    # or upside down. Keep the reading target unchanged.
+    if rng.random() < 0.35:
+        out = out.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if rng.random() < 0.45:
+        angle = rng.choices([180, 90, 270], weights=[0.6, 0.2, 0.2])[0]
+        rotated = out.rotate(angle, expand=True, fillcolor=(0, 0, 0))
+        fitted = ImageOps.contain(rotated, image.size)
+        canvas = Image.new("RGB", image.size, (0, 0, 0))
+        canvas.paste(fitted, ((image.width - fitted.width) // 2,
+                              (image.height - fitted.height) // 2))
+        out = canvas
     if rng.random() < 0.85:
         angle = rng.uniform(-9.0, 9.0)
         out = out.rotate(angle, resample=Image.Resampling.BILINEAR, expand=False,

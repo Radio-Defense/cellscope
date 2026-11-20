@@ -1321,6 +1321,8 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             cs_strlcpy(ms.path, capture, sizeof(ms.path));
             ms.demo = app->vlm.active == VLM_BACKEND_MOCK;
             meter_push_locked(app, &ms);
+            app_log(app, "meter reading recorded: %llu Hz (%s, %.2f)",
+                    (unsigned long long)ms.hz, ms.backend, ms.confidence);
             app->reader.accepted++;
             cs_strlcpy(app->reader.capture_path, capture,
                        sizeof(app->reader.capture_path));
