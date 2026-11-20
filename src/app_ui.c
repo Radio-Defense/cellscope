@@ -572,8 +572,7 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                       UI_COLOR(190, 210, 220, 185), info);
     }
 
-    if (!app->demo && (app->image_mode || (app->camera_ok && app->cam.active)))
-        draw_guide(ui, p, s);
+    draw_guide(ui, p, s);
 
     if (s->paused) {
         ui_rect_fill(ui, p, UI_COLOR(4, 8, 11, 150));
@@ -612,27 +611,16 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         }
     }
 
-    /* Last-capture thumbnail (formerly in the reader pane). */
-    if (!app->demo && (app->preview_tex || s->reader.capture_path[0])) {
-        float sw = CS_MIN(176.0f, p.w * 0.24f);
-        float sh = sw * 9.0f / 16.0f;
-        UiRect snap = ui_rect(p.x + p.w - sw - 12, p.y + 36, sw, sh);
-        ui_round_rect(ui, snap, 7, UI_COLOR(5, 9, 13, 225));
-        if (app->preview_tex) {
-            float iw = 1, ih = 1;
-            SDL_GetTextureSize(app->preview_tex, &iw, &ih);
-            float fit_w = snap.w, fit_h = fit_w * ih / iw;
-            if (fit_h > snap.h) {
-                fit_h = snap.h;
-                fit_w = fit_h * iw / ih;
-            }
-            SDL_FRect dst = {snap.x + (snap.w - fit_w) / 2,
-                             snap.y + (snap.h - fit_h) / 2, fit_w, fit_h};
-            SDL_RenderTexture(ui->ren, app->preview_tex, NULL, &dst);
-        }
-        ui_rect_outline(ui, snap, UI_BORDER, 1);
-        ui_text_font(ui, FONT_SEMIBOLD, snap.x + 6, snap.y + 5, 6.8f,
-                     UI_COLOR(220, 235, 245, 200), "LAST CAPTURE");
+    /* Consensus confirmation, rendered in the control layer over the feed. */
+    if (s->reader.visible && s->reader.hz > 0) {
+        float cx = p.x + p.w - 38;
+        float cy = p.y + 58;
+        ui_circle(ui, cx, cy, 21, UI_COLOR(4, 10, 8, 215));
+        ui_circle(ui, cx, cy, 18, UI_COLOR(20, 62, 47, 235));
+        ui_circle(ui, cx, cy, 16.5f, UI_COLOR(8, 20, 16, 245));
+        UiColor check = UI_COLOR(95, 245, 170, 255);
+        ui_line(ui, cx - 8.5f, cy - 0.5f, cx - 2.5f, cy + 6.0f, check, 3.2f);
+        ui_line(ui, cx - 2.5f, cy + 6.0f, cx + 9.5f, cy - 7.5f, check, 3.2f);
     }
 
     /* Consensus result is displayed in the webcam pane for three seconds. */
