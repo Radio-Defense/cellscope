@@ -10,13 +10,14 @@ state and a webcam at the same time.
 - **Top left:** preview from the webcam attached to the local machine (never
   the Android phone), with a meter alignment guide. While a device screen is
   visible, a live card shows the reading extracted from every processed frame.
-- **Top right:** best-result reader. It shows nothing while a screen is being
-  collected, then displays the selected best extraction for **3 seconds**. The
-  value is converted to Hz, and the exact best frame is saved.
+- **Top right:** consensus-result reader. It shows nothing while a screen is
+  being collected, then displays the selected most-probable extraction for
+  **3 seconds**. The value is converted to Hz, and the exact best frame is saved.
 - **Bottom right:** timestamped frequency readings, each with the filename of
   its saved screenshot.
 - **Top centre:** a large play/pause control for both the local webcam pipeline
-  and ADB polling.
+  and ADB polling. The window opens fullscreen by default (1440×900 logical
+  layout, letterboxed on other aspect ratios).
 - **On launch:** a step-by-step modal explains how to connect the phone over
   ADB. It only disappears when a device is authorized; failures show concrete
   fixes.
@@ -300,11 +301,14 @@ itself. The host displays every frame's result on the left and selects the best
 later. There is no fallback reader: if no VLM is available, CellScope shows that
 the reader is offline and does not invent a frequency.
 
-### Burst capture and best-frame selection
+### Burst capture and consensus selection
 
 A person holding a pocket meter cannot hold it perfectly still. CellScope keeps
-the last **12 camera frames** (roughly 1.5 s at the camera's capture rate) and
-scores each frame's central guide area for:
+the last **12 camera frames** (roughly 1.5 s at the camera's capture rate) as a
+staging ring for the sharpest unused frame to send to the VLM. This ring does
+**not** limit the reading selection: every extracted reading from the entire
+time the device screen is visible participates in the final decision. Each
+frame is scored for:
 
 - Laplacian/gradient sharpness (focus / motion blur)
 - local contrast
@@ -317,15 +321,21 @@ a blank wall does not trigger the VLM. A visibility event starts when the VLM
 reports `visible:true` and ends when it reports `visible:false` (or when capture
 is paused/stopped). During the event:
 
-- the **left-top live card** updates with every frame's extracted reading;
+- the **left-top live card** updates with every extracted reading;
 - the **right-top pane stays blank**, showing `—` and “collecting”;
-- CellScope keeps the extraction with the best combined confidence and frame
-  quality;
-- when the screen disappears, the best extraction is inserted into the
-  bottom-right table with its frame timestamp and screenshot filename;
-- the right-top pane displays that best value for **3 seconds**, then clears.
+- every readable extraction votes in a frequency cluster, weighted by VLM
+  confidence and frame quality;
+- the cluster with the greatest aggregate weight wins; within it, the
+  highest-quality frame is selected;
+- when the screen disappears, the winning reading is added to the bottom-right
+  table **immediately**, with its frame filename and the epoch timestamp when
+  that webcam frame appeared;
+- the right-top pane displays the winning value for **3 seconds**, then clears.
 
-The UI shows `burst 12/12 · best 90%`.
+No fixed 12-frame sample is used for the decision. The 12-frame value in the UI
+is only the staging/burst indicator. The table timestamp is compensated for VLM
+latency by using the source frame's webcam capture time, not the later response
+time.
 
 ![Live per-frame reading](docs/screenshot-live-reading.png)
 

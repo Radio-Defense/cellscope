@@ -111,7 +111,8 @@ int main(int argc, char **argv)
     }
 
     SDL_Window *win = SDL_CreateWindow("CellScope — Phone Cell + Meter Reader", 1440, 900,
-                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+                                       SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE |
+                                           SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!win) {
         fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
         SDL_Quit();
@@ -140,9 +141,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int logical_w = 0, logical_h = 0;
-    SDL_GetWindowSize(win, &logical_w, &logical_h);
-    SDL_SetRenderLogicalPresentation(ren, logical_w, logical_h, SDL_LOGICAL_PRESENTATION_STRETCH);
+    /* The UI is designed at 1440x900. Fixed logical presentation keeps text
+     * and controls readable when the window opens fullscreen on a HiDPI or
+     * 4K display; the renderer letterboxes rather than stretching. */
+    int logical_w = 1440, logical_h = 900;
+    SDL_SetRenderLogicalPresentation(ren, logical_w, logical_h,
+                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
     bool running = true;
     bool screenshot_taken = false;
@@ -158,14 +162,6 @@ int main(int argc, char **argv)
             app_handle_event(app, &converted);
         }
         if (!running) break;
-
-        int w = 0, h = 0;
-        SDL_GetWindowSize(win, &w, &h);
-        if (w != logical_w || h != logical_h) {
-            logical_w = w;
-            logical_h = h;
-            SDL_SetRenderLogicalPresentation(ren, w, h, SDL_LOGICAL_PRESENTATION_STRETCH);
-        }
 
         app_update(app);
         if (SDL_GetAtomicInt(&app->quit)) {
