@@ -102,7 +102,6 @@ typedef struct {
     SDL_Rect clip_stack[UI_CLIP_STACK];
     int clip_depth;
     SDL_Texture *bg_gradient;
-    SDL_Texture *glow_tex;
     char asset_dir[CS_PATH_MAX];
 } Ui;
 

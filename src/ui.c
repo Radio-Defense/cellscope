@@ -77,28 +77,6 @@ bool ui_init(Ui *ui, SDL_Renderer *ren, const char *asset_dir, float scale, char
         SDL_SetTextureScaleMode(ui->bg_gradient, SDL_SCALEMODE_LINEAR);
     }
 
-    ui->glow_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, 256,
-                                     256);
-    if (ui->glow_tex) {
-        Uint8 *pixels = calloc(256 * 256, 4);
-        if (pixels) {
-            for (int y = 0; y < 256; y++) {
-                for (int x = 0; x < 256; x++) {
-                    float dx = (x - 127.5f) / 128.0f;
-                    float dy = (y - 127.5f) / 128.0f;
-                    float d = sqrtf(dx * dx + dy * dy);
-                    float a = d >= 1.0f ? 0.0f : (1.0f - d) * (1.0f - d);
-                    pixels[(y * 256 + x) * 4 + 0] = 255;
-                    pixels[(y * 256 + x) * 4 + 1] = 255;
-                    pixels[(y * 256 + x) * 4 + 2] = 255;
-                    pixels[(y * 256 + x) * 4 + 3] = (Uint8)(a * 255);
-                }
-            }
-            SDL_UpdateTexture(ui->glow_tex, NULL, pixels, 256 * 4);
-            free(pixels);
-        }
-        SDL_SetTextureBlendMode(ui->glow_tex, SDL_BLENDMODE_BLEND);
-    }
     return true;
 }
 
@@ -112,7 +90,6 @@ void ui_shutdown(Ui *ui)
         if (ui->shape_cache[i].tex) SDL_DestroyTexture(ui->shape_cache[i].tex);
     }
     if (ui->bg_gradient) SDL_DestroyTexture(ui->bg_gradient);
-    if (ui->glow_tex) SDL_DestroyTexture(ui->glow_tex);
     if (ui->cursor_arrow) SDL_DestroyCursor(ui->cursor_arrow);
     if (ui->cursor_hand) SDL_DestroyCursor(ui->cursor_hand);
     fonts_done(&ui->fonts);
@@ -204,18 +181,6 @@ void ui_background(Ui *ui)
     } else {
         SDL_SetRenderDrawColor(ui->ren, UI_BG_TOP.r, UI_BG_TOP.g, UI_BG_TOP.b, 255);
         SDL_RenderClear(ui->ren);
-    }
-    if (ui->glow_tex) {
-        SDL_FRect g1 = {-240, -340, 1100, 1000};
-        SDL_SetTextureColorMod(ui->glow_tex, UI_ACCENT.r, UI_ACCENT.g, UI_ACCENT.b);
-        SDL_SetTextureAlphaMod(ui->glow_tex, 22);
-        SDL_RenderTexture(ui->ren, ui->glow_tex, NULL, &g1);
-        SDL_FRect g2 = {(float)ui->win_w - 500, -260, 900, 850};
-        SDL_SetTextureColorMod(ui->glow_tex, UI_BLUE.r, UI_BLUE.g, UI_BLUE.b);
-        SDL_SetTextureAlphaMod(ui->glow_tex, 14);
-        SDL_RenderTexture(ui->ren, ui->glow_tex, NULL, &g2);
-        SDL_SetTextureColorMod(ui->glow_tex, 255, 255, 255);
-        SDL_SetTextureAlphaMod(ui->glow_tex, 255);
     }
 }
 
