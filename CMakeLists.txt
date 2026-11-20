@@ -48,6 +48,8 @@ set(CELLSCOPE_SOURCES
   src/fonts.c
   src/proc.c
   src/runtime.c
+  src/settings.c
+  src/hfmodel.c
   src/server.c
   src/adb.c
   src/camera.c

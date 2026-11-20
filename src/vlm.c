@@ -1,8 +1,6 @@
 #include "vlm.h"
 
-#include <ctype.h>
 #include <math.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +12,6 @@
 #endif
 
 #include "cellular.h"
-#include "proc.h"
-#include "stb_image_write.h"
 
 /* Not declared in the public section of the header, but exported by the
  * implementation in stb_impl.c. */
@@ -126,7 +122,6 @@ const char *vlm_backend_name(VlmBackend b)
     switch (b) {
         case VLM_BACKEND_OLLAMA: return "Ollama";
         case VLM_BACKEND_LLAMA: return "llama.cpp";
-        case VLM_BACKEND_TESSERACT: return "Tesseract OCR";
         case VLM_BACKEND_MOCK: return "Demo";
         case VLM_BACKEND_OFF: return "Off";
         default: return "Auto";
@@ -265,8 +260,7 @@ static bool llama_probe(VlmConfig *cfg, char *found, size_t found_cap, bool requ
     return true;
 }
 
-void vlm_config_init(VlmConfig *cfg, const char *mode, const char *url, const char *model,
-                     const char *work_dir)
+void vlm_config_init(VlmConfig *cfg, const char *mode, const char *url, const char *model)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->requested = VLM_BACKEND_AUTO;
@@ -274,8 +268,6 @@ void vlm_config_init(VlmConfig *cfg, const char *mode, const char *url, const ch
         if (strcmp(mode, "ollama") == 0) cfg->requested = VLM_BACKEND_OLLAMA;
         else if (strcmp(mode, "llama") == 0 || strcmp(mode, "llama-server") == 0)
             cfg->requested = VLM_BACKEND_LLAMA;
-        else if (strcmp(mode, "tesseract") == 0 || strcmp(mode, "ocr") == 0)
-            cfg->requested = VLM_BACKEND_TESSERACT;
         else if (strcmp(mode, "mock") == 0) cfg->requested = VLM_BACKEND_MOCK;
         else if (strcmp(mode, "off") == 0) cfg->requested = VLM_BACKEND_OFF;
     }
@@ -284,43 +276,8 @@ void vlm_config_init(VlmConfig *cfg, const char *mode, const char *url, const ch
                                                              sizeof(cfg->url));
     else cs_strlcpy(cfg->url, "http://127.0.0.1:11434", sizeof(cfg->url));
     if (model) cs_strlcpy(cfg->model, model, sizeof(cfg->model));
-    if (work_dir) cs_strlcpy(cfg->work_dir, work_dir, sizeof(cfg->work_dir));
     cfg->active = VLM_BACKEND_OFF;
     cs_strlcpy(cfg->label, "Not configured", sizeof(cfg->label));
-}
-
-void vlm_config_set_workdir(VlmConfig *cfg, const char *dir)
-{
-    if (cfg && dir) cs_strlcpy(cfg->work_dir, dir, sizeof(cfg->work_dir));
-}
-
-static bool tesseract_probe(VlmConfig *cfg)
-{
-    char found[CS_PATH_MAX];
-    if (!proc_find_in_path("tesseract", found, sizeof(found))) {
-#ifdef _WIN32
-        snprintf(cfg->detail, sizeof(cfg->detail),
-                 "Tesseract is not installed. Install it with "
-                 "`winget install UB-Mannheim.TesseractOCR` or use a VLM backend.");
-#elif defined(__APPLE__)
-        snprintf(cfg->detail, sizeof(cfg->detail),
-                 "Tesseract is not installed. Install it with `brew install tesseract`, "
-                 "or use a VLM backend.");
-#else
-        snprintf(cfg->detail, sizeof(cfg->detail),
-                 "Tesseract is not installed. Install `tesseract-ocr`, or use a VLM "
-                 "backend.");
-#endif
-        return false;
-    }
-    cs_strlcpy(cfg->tool_path, found, sizeof(cfg->tool_path));
-    cs_strlcpy(cfg->label, "Tesseract OCR", sizeof(cfg->label));
-    cs_strlcpy(cfg->detail,
-               "No vision-language model detected; using local Tesseract OCR as a "
-               "fallback. Install Ollama + moondream (or llama-server + SmolVLM) for "
-               "true VLM reading.",
-               sizeof(cfg->detail));
-    return true;
 }
 
 void vlm_config_probe(VlmConfig *cfg)
@@ -349,16 +306,6 @@ void vlm_config_probe(VlmConfig *cfg)
                    sizeof(cfg->detail));
         return;
     }
-    if (cfg->requested == VLM_BACKEND_TESSERACT) {
-        if (tesseract_probe(cfg)) {
-            cfg->active = VLM_BACKEND_TESSERACT;
-            cfg->available = true;
-        } else {
-            cfg->error[0] = '\0';
-            cs_strlcpy(cfg->error, cfg->detail, sizeof(cfg->error));
-        }
-        return;
-    }
     if (cfg->requested == VLM_BACKEND_OLLAMA) {
         char found[128];
         if (ollama_probe(cfg, found, sizeof(found))) {
@@ -382,7 +329,7 @@ void vlm_config_probe(VlmConfig *cfg)
         return;
     }
 
-    /* Auto: prefer a real VLM on Ollama, then llama-server, then OCR. */
+    /* Auto: prefer a real VLM on Ollama, then llama-server. */
     char found[128];
     VlmConfig saved = *cfg;
     if (ollama_probe(cfg, found, sizeof(found))) {
@@ -403,21 +350,12 @@ void vlm_config_probe(VlmConfig *cfg)
     char llama_detail[512];
     snprintf(llama_detail, sizeof(llama_detail), "%s", cfg->detail);
     *cfg = saved;
-    if (tesseract_probe(cfg)) {
-        cfg->active = VLM_BACKEND_TESSERACT;
-        cfg->available = true;
-        (void)ollama_detail;
-        (void)llama_detail;
-        snprintf(cfg->detail, sizeof(cfg->detail),
-                 "No VLM detected — using local Tesseract OCR as a fallback. Install "
-                 "Ollama + moondream (or llama-server + SmolVLM) for true vision reading.");
-    } else {
-        cfg->active = VLM_BACKEND_OFF;
-        snprintf(cfg->detail, sizeof(cfg->detail),
-                 "No vision backend available. Install Ollama + moondream, or run "
-                 "llama-server with a multimodal GGUF. Tesseract OCR is also missing.");
-        cs_strlcpy(cfg->error, cfg->detail, sizeof(cfg->error));
-    }
+    cfg->active = VLM_BACKEND_OFF;
+    snprintf(cfg->detail, sizeof(cfg->detail),
+             "No vision-language model is available. The local MiniMind/HF reader may "
+             "still be starting; otherwise start Ollama or llama-server with a "
+             "multimodal model.");
+    cs_strlcpy(cfg->error, cfg->detail, sizeof(cfg->error));
 }
 
 static char *encode_png(const uint8_t *rgb, int w, int h, size_t *len)
@@ -429,8 +367,8 @@ static char *encode_png(const uint8_t *rgb, int w, int h, size_t *len)
     return (char *)png;
 }
 
-static bool ollama_read(VlmConfig *cfg, const char *b64, MeterReading *out, char *err,
-                        size_t err_cap)
+static bool ollama_read(VlmConfig *cfg, const char *b64, const char *default_unit,
+                        MeterReading *out, char *err, size_t err_cap)
 {
     char prompt[VLM_PROMPT_MAX];
     cs_json_escape(k_prompt, prompt, sizeof(prompt));
@@ -464,7 +402,7 @@ static bool ollama_read(VlmConfig *cfg, const char *b64, MeterReading *out, char
         free(resp.data);
         return false;
     }
-    bool parsed = meter_parse_model_output(model_text, "MHz", out);
+    bool parsed = meter_parse_model_output(model_text, default_unit, out);
     if (!parsed) {
         snprintf(err, err_cap, "Could not parse model answer: %.180s", model_text);
     } else if (out->confidence <= 0.0) {
@@ -474,8 +412,8 @@ static bool ollama_read(VlmConfig *cfg, const char *b64, MeterReading *out, char
     return parsed;
 }
 
-static bool llama_read(VlmConfig *cfg, const char *b64, MeterReading *out, char *err,
-                       size_t err_cap)
+static bool llama_read(VlmConfig *cfg, const char *b64, const char *default_unit,
+                       MeterReading *out, char *err, size_t err_cap)
 {
     char prompt[VLM_PROMPT_MAX];
     cs_json_escape(k_prompt, prompt, sizeof(prompt));
@@ -510,7 +448,7 @@ static bool llama_read(VlmConfig *cfg, const char *b64, MeterReading *out, char 
         free(resp.data);
         return false;
     }
-    bool parsed = meter_parse_model_output(model_text, "MHz", out);
+    bool parsed = meter_parse_model_output(model_text, default_unit, out);
     if (!parsed) {
         snprintf(err, err_cap, "Could not parse model answer: %.180s", model_text);
     } else if (out->confidence <= 0.0) {
@@ -518,503 +456,6 @@ static bool llama_read(VlmConfig *cfg, const char *b64, MeterReading *out, char 
     }
     free(resp.data);
     return parsed;
-}
-
-/* Crop the central guide area, stretch contrast, make the background light,
- * and upscale 2x. Tesseract does much better on that than on a dark camera
- * frame with a tiny display. */
-static uint8_t *ocr_preprocess_box(const uint8_t *rgb, int w, int h, float fx, float fy,
-                                   float frac_w, float frac_h, int scale, int *ow, int *oh)
-{
-    int cw = (int)(w * frac_w);
-    int ch = (int)(h * frac_h);
-    if (cw < 32 || ch < 16) return NULL;
-    int x0 = (int)(w * fx);
-    int y0 = (int)(h * fy);
-    if (x0 + cw > w) cw = w - x0;
-    if (y0 + ch > h) ch = h - y0;
-    int outw = cw * scale, outh = ch * scale;
-    uint8_t *gray = malloc((size_t)cw * ch);
-    if (!gray) return NULL;
-    for (int y = 0; y < ch; y++) {
-        for (int x = 0; x < cw; x++) {
-            const uint8_t *p = rgb + ((size_t)(y + y0) * w + (x + x0)) * 3;
-            int lum = (p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8;
-            gray[(size_t)y * cw + x] = (uint8_t)lum;
-        }
-    }
-    /* Percentile stretch. */
-    int hist[256] = {0};
-    for (int i = 0; i < cw * ch; i++) hist[gray[i]]++;
-    int total = cw * ch, lo = 0, hi = 255, acc = 0;
-    for (int i = 0; i < 256; i++) {
-        acc += hist[i];
-        if (acc > total / 50) {
-            lo = i;
-            break;
-        }
-    }
-    acc = 0;
-    for (int i = 255; i >= 0; i--) {
-        acc += hist[i];
-        if (acc > total / 50) {
-            hi = i;
-            break;
-        }
-    }
-    if (hi <= lo) {
-        lo = 0;
-        hi = 255;
-    }
-    double mean = 0;
-    for (int i = 0; i < total; i++) mean += gray[i];
-    mean /= total;
-    bool invert = mean < 128.0;
-    uint8_t *out = malloc((size_t)outw * outh);
-    if (!out) {
-        free(gray);
-        return NULL;
-    }
-    for (int y = 0; y < outh; y++) {
-        int sy = y / scale;
-        for (int x = 0; x < outw; x++) {
-            int sx = x / scale;
-            int v = gray[(size_t)sy * cw + sx];
-            v = (v - lo) * 255 / CS_MAX(1, hi - lo);
-            if (v < 0) v = 0;
-            if (v > 255) v = 255;
-            if (invert) v = 255 - v;
-            out[(size_t)y * outw + x] = (uint8_t)v;
-        }
-    }
-    free(gray);
-    *ow = outw;
-    *oh = outh;
-    return out;
-}
-
-static uint8_t *ocr_preprocess_roi(const uint8_t *rgb, int w, int h, float frac_w,
-                                  float frac_h, int scale, int *ow, int *oh)
-{
-    return ocr_preprocess_box(rgb, w, h, (1.0f - frac_w) / 2.0f, (1.0f - frac_h) / 2.0f,
-                              frac_w, frac_h, scale, ow, oh);
-}
-
-static uint8_t *ocr_preprocess(const uint8_t *rgb, int w, int h, int *ow, int *oh)
-{
-    return ocr_preprocess_roi(rgb, w, h, 0.72f, 0.50f, 2, ow, oh);
-}
-
-static void ocr_debug(VlmConfig *cfg, const char *fmt, ...)
-{
-    if (!getenv("CELLSCOPE_OCR_DEBUG") || !cfg->work_dir[0]) return;
-    char path[CS_PATH_MAX];
-    cs_path_join(path, sizeof(path), cfg->work_dir, "ocr_debug.txt");
-    FILE *f = fopen(path, "a");
-    if (!f) return;
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
-    va_end(ap);
-    fputc('\n', f);
-    fclose(f);
-}
-
-static double unit_scale(const char *unit)
-{
-    if (!unit) return 0;
-    if (strcasecmp(unit, "ghz") == 0) return 1e9;
-    if (strcasecmp(unit, "mhz") == 0) return 1e6;
-    if (strcasecmp(unit, "khz") == 0) return 1e3;
-    if (strcasecmp(unit, "hz") == 0) return 1.0;
-    return 0;
-}
-
-/* A wide, low-magnification OCR pass used only to find the printed unit when
- * the digit crop did not include it. */
-static void scan_unit_text(const char *text, char *out, size_t cap)
-{
-    char low[4096];
-    cs_strlcpy(low, text, sizeof(low));
-    cs_lower(low);
-    const char *units[] = {"ghz", "mhz", "khz", "hz"};
-    const char *names[] = {"GHz", "MHz", "kHz", "Hz"};
-    for (size_t i = 0; i < 4; i++) {
-        const char *p = low;
-        while ((p = strstr(p, units[i])) != NULL) {
-            char prev = p == low ? ' ' : p[-1];
-            char next = p[strlen(units[i])];
-            bool ok_prev = !isalnum((unsigned char)prev);
-            bool ok_next = !isalnum((unsigned char)next);
-            if (ok_prev && ok_next) {
-                cs_strlcpy(out, names[i], cap);
-                return;
-            }
-            p += strlen(units[i]);
-        }
-    }
-}
-
-/* A low-magnification pass over the bottom and right edges, where pocket
- * meters usually print their unit. Only runs when the digit crop omitted it. */
-static void detect_unit_ocr(VlmConfig *cfg, const uint8_t *rgb, int w, int h, char *out,
-                            size_t cap)
-{
-    out[0] = '\0';
-    struct {
-        float fx, fy, fw, fh;
-        const char *name;
-    } boxes[] = {
-        {0.03f, 0.62f, 0.94f, 0.34f, "ocr_unit_bottom.png"},
-        {0.62f, 0.15f, 0.35f, 0.70f, "ocr_unit_right.png"},
-    };
-    for (size_t b = 0; b < CS_ARRAY_LEN(boxes); b++) {
-        int ow = 0, oh = 0;
-        uint8_t *gray = ocr_preprocess_box(rgb, w, h, boxes[b].fx, boxes[b].fy, boxes[b].fw,
-                                           boxes[b].fh, 3, &ow, &oh);
-        if (!gray) continue;
-        char path[CS_PATH_MAX];
-        cs_path_join(path, sizeof(path), cfg->work_dir, boxes[b].name);
-        if (!stbi_write_png(path, ow, oh, 1, gray, ow)) {
-            free(gray);
-            continue;
-        }
-        free(gray);
-        const char *modes[] = {"7", "6"};
-        for (size_t m = 0; m < 2 && !out[0]; m++) {
-            const char *argv[] = {cfg->tool_path, boxes[b].name, "stdout", "--psm",
-                                  modes[m], NULL};
-            char text[4096], err[256];
-            int code = -1;
-            bool timed_out = false;
-            if (proc_run_in(cfg->work_dir, argv, text, sizeof(text), 4000, &code,
-                            &timed_out, err, sizeof(err)) &&
-                !timed_out) {
-                scan_unit_text(text, out, cap);
-            }
-        }
-        if (out[0]) return;
-    }
-}
-
-typedef struct {
-    int y0, y1;
-    double score;
-} OcrBand;
-
-static int cmp_band(const void *a, const void *b)
-{
-    const OcrBand *x = a, *y = b;
-    if (x->score < y->score) return 1;
-    if (x->score > y->score) return -1;
-    return 0;
-}
-
-/* Find horizontal text bands by row-to-row edge density. This works for
- * low-contrast/reflective displays where a simple dark-pixel count is
- * dominated by the camera background. */
-static int ocr_find_bands(const uint8_t *gray, int w, int h, OcrBand *out, int max)
-{
-    if (!gray || w < 32 || h < 32) return 0;
-    int *ink = calloc((size_t)h, sizeof(int));
-    if (!ink) return 0;
-    for (int y = 0; y < h; y++) {
-        const uint8_t *row = gray + (size_t)y * w;
-        int n = 0;
-        int prev = row[0];
-        for (int x = 1; x < w; x++) {
-            int d = row[x] - prev;
-            if (d < 0) d = -d;
-            if (d > 10) n++;
-            prev = row[x];
-        }
-        ink[y] = n;
-    }
-    int thr = CS_MAX(8, w / 200);
-    int count = 0, y = 0;
-    while (y < h && count < max) {
-        while (y < h && ink[y] < thr) y++;
-        if (y >= h) break;
-        int start = y;
-        int last_ink = y;
-        while (y < h) {
-            if (ink[y] >= thr) {
-                last_ink = y;
-            } else if (y - last_ink > 5) {
-                break;
-            }
-            y++;
-        }
-        int end = last_ink;
-        int band_h = end - start + 1;
-        if (band_h >= 8 && band_h <= h / 2 + 2) {
-            long sum = 0;
-            for (int k = start; k <= end; k++) sum += ink[k];
-            out[count].y0 = start;
-            out[count].y1 = end;
-            out[count].score = (double)sum * (1.0 + band_h * 0.012);
-            count++;
-        }
-        y = end + 1;
-    }
-    free(ink);
-    qsort(out, (size_t)count, sizeof(*out), cmp_band);
-    return count;
-}
-
-/* 0=identity, 1=mirror, 2=180, 3=mirror+180, 4=90cw, 5=270cw,
- * 6=mirror+90, 7=mirror+270 */
-static uint8_t *ocr_transform(const uint8_t *src, int w, int h, int mode, int *ow, int *oh)
-{
-    if (mode == 0) {
-        uint8_t *copy = malloc((size_t)w * h);
-        if (!copy) return NULL;
-        memcpy(copy, src, (size_t)w * h);
-        *ow = w;
-        *oh = h;
-        return copy;
-    }
-    if (mode == 1 || mode == 3) {
-        uint8_t *dst = malloc((size_t)w * h);
-        if (!dst) return NULL;
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++) {
-                int sy = (mode == 3) ? h - 1 - y : y;
-                int sx = (mode == 1) ? w - 1 - x : x;
-                dst[(size_t)y * w + x] = src[(size_t)sy * w + sx];
-            }
-        *ow = w;
-        *oh = h;
-        return dst;
-    }
-    if (mode == 2) {
-        uint8_t *dst = malloc((size_t)w * h);
-        if (!dst) return NULL;
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++)
-                dst[(size_t)y * w + x] = src[(size_t)(h - 1 - y) * w + (w - 1 - x)];
-        *ow = w;
-        *oh = h;
-        return dst;
-    }
-    int cw = h, ch = w;
-    uint8_t *dst = malloc((size_t)cw * ch);
-    if (!dst) return NULL;
-    for (int y = 0; y < ch; y++) {
-        for (int x = 0; x < cw; x++) {
-            int sx, sy;
-            if (mode == 4) {          /* rotate 90 CW */
-                sx = w - 1 - y;
-                sy = x;
-            } else if (mode == 5) {   /* rotate 270 CW */
-                sx = y;
-                sy = h - 1 - x;
-            } else if (mode == 6) {   /* mirror + 90 */
-                sx = y;
-                sy = x;
-            } else {                  /* mirror + 270 */
-                sx = w - 1 - y;
-                sy = h - 1 - x;
-            }
-            dst[(size_t)y * cw + x] = src[(size_t)sy * w + sx];
-        }
-    }
-    *ow = cw;
-    *oh = ch;
-    return dst;
-}
-
-static int digit_count(const char *s)
-{
-    int n = 0;
-    for (; s && *s; s++)
-        if (isdigit((unsigned char)*s)) n++;
-    return n;
-}
-
-static bool ocr_parse_text(const char *text, const char *default_unit, MeterReading *out,
-                           int *score)
-{
-    if (!text || !*text) return false;
-    char low[4096];
-    cs_strlcpy(low, text, sizeof(low));
-    cs_lower(low);
-    /* Tesseract commonly reads the final z of MHz/GHz/kHz as 2. */
-    for (char *p = low; (p = strstr(p, "mh2")) != NULL; p += 3)
-        if (!isalnum((unsigned char)p[3])) p[2] = 'z';
-    for (char *p = low; (p = strstr(p, "gh2")) != NULL; p += 3)
-        if (!isalnum((unsigned char)p[3])) p[2] = 'z';
-    for (char *p = low; (p = strstr(p, "kh2")) != NULL; p += 3)
-        if (!isalnum((unsigned char)p[3])) p[2] = 'z';
-    for (char *p = low; (p = strstr(p, "nhz")) != NULL; p += 3)
-        p[0] = 'm';
-    for (char *p = low; (p = strstr(p, "whz")) != NULL; p += 3)
-        p[0] = 'm';
-    const char *start = low;
-    char *eq = strstr(low, "req");
-    if (!eq) eq = strstr(low, "eq");
-    if (eq) start = eq + 2;
-    char candidate[4096];
-    size_t co = 0;
-    for (const char *p = start; *p && co + 1 < sizeof(candidate); p++) {
-        if (!isspace((unsigned char)*p)) candidate[co++] = *p;
-    }
-    candidate[co] = '\0';
-    char raw_saved[256];
-    cs_strlcpy(raw_saved, text, sizeof(raw_saved));
-    MeterReading r;
-    if (!meter_parse_text(candidate, default_unit, &r) || !r.visible) return false;
-    if (r.hz < 1e6 || r.hz > 1e11) return false;
-
-    /* Inspect the first numeric token: reject the common OCR failure where a
-     * reflection produces leading zeros and an implausible huge value. */
-    const char *num = candidate;
-    while (*num && !isdigit((unsigned char)*num)) num++;
-    int int_digits = 0;
-    while (num[int_digits] >= '0' && num[int_digits] <= '9') int_digits++;
-    bool leading_zero = int_digits > 1 && num[0] == '0';
-    bool unit = cs_contains_ci(candidate, "hz");
-    if (leading_zero) return false;
-    /* A unit-less OCR is a fallback; do not let a reflection turn 2.5 GHz
-     * into 52 GHz. */
-    if (!unit && r.hz > 12e9) return false;
-
-    int digits = digit_count(candidate);
-    if (digits < 4) return false;
-    int sc = digits + (unit ? 8 : 0);
-    if (eq || strstr(low, "freq")) sc += 4;
-    if (r.hz >= 1e6 && r.hz <= 1e11) sc += 2;
-    *out = r;
-    cs_strlcpy(out->raw, raw_saved, sizeof(out->raw));
-    if (out->confidence <= 0.0 || out->confidence > 0.9) out->confidence = 0.56;
-    if (score) *score = sc;
-    return true;
-}
-
-/* Try one orientation: locate horizontal bands, OCR each, and keep the best
- * plausible frequency. Returns true for a high-confidence hit. */
-static bool ocr_try_orientation(VlmConfig *cfg, const uint8_t *gray, int w, int h,
-                                int mode, const char *default_unit, MeterReading *best,
-                                int *best_score, int *calls)
-{
-    int ow = 0, oh = 0;
-    uint8_t *img = ocr_transform(gray, w, h, mode, &ow, &oh);
-    if (!img) return false;
-    OcrBand bands[12];
-    int nb = ocr_find_bands(img, ow, oh, bands, 12);
-    bool strong = false;
-    ocr_debug(cfg, "=== orientation %d: %d bands on %dx%d ===", mode, nb, ow, oh);
-    for (int b = 0; b < nb && b < 4; b++) {
-        int pad = 8;
-        int y0 = CS_MAX(0, bands[b].y0 - pad);
-        int y1 = CS_MIN(oh - 1, bands[b].y1 + pad);
-        int bh = y1 - y0 + 1;
-        if (bh < 12) continue;
-        char path[CS_PATH_MAX];
-        cs_path_join(path, sizeof(path), cfg->work_dir, "ocr_band.png");
-        if (!stbi_write_png(path, ow, bh, 1, img + (size_t)y0 * ow, ow)) continue;
-        if (getenv("CELLSCOPE_OCR_DEBUG")) {
-            char dbg[CS_PATH_MAX];
-            snprintf(dbg, sizeof(dbg), "%s/ocr_band_%d_%d.png", cfg->work_dir, mode, b);
-            stbi_write_png(dbg, ow, bh, 1, img + (size_t)y0 * ow, ow);
-        }
-        ocr_debug(cfg, "band %d y=%d..%d score=%.1f", b, y0, y1, bands[b].score);
-        char text[4096] = {0};
-        for (int pass = 0; pass < 2; pass++) {
-            const char *psm = pass == 0 ? "7" : "6";
-            const char *argv[] = {cfg->tool_path, "ocr_band.png", "stdout", "--psm",
-                                  psm, NULL};
-            char err[256];
-            int code = -1;
-            bool timed_out = false;
-            if (calls) (*calls)++;
-            if (!proc_run_in(cfg->work_dir, argv, text, sizeof(text), 5000, &code,
-                             &timed_out, err, sizeof(err)) ||
-                timed_out)
-                continue;
-            ocr_debug(cfg, "  psm %s => %s", psm, text);
-            MeterReading r;
-            int score = 0;
-            if (ocr_parse_text(text, default_unit, &r, &score)) {
-                ocr_debug(cfg, "    candidate mode=%d score=%d hz=%.0f raw=%s", mode,
-                          score, r.hz, r.raw);
-                if (score > *best_score) {
-                    *best = r;
-                    *best_score = score;
-                }
-                bool has_unit = cs_contains_ci(text, "hz");
-                if (has_unit && digit_count(text) >= 6 && score >= 14) {
-                    strong = true;
-                    break;
-                }
-                break;
-            }
-        }
-        if (strong) break;
-    }
-    free(img);
-    return strong;
-}
-
-static bool tesseract_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h,
-                           const char *default_unit, MeterReading *out, char *err,
-                           size_t err_cap)
-{
-    if (!cfg->tool_path[0]) {
-        snprintf(err, err_cap, "Tesseract not found");
-        return false;
-    }
-    if (!cfg->work_dir[0]) {
-        snprintf(err, err_cap, "No work directory configured");
-        return false;
-    }
-    int ow = 0, oh = 0;
-    uint8_t *gray = ocr_preprocess(rgb, w, h, &ow, &oh);
-    if (!gray) {
-        snprintf(err, err_cap, "Could not preprocess frame");
-        return false;
-    }
-    if (getenv("CELLSCOPE_OCR_DEBUG")) {
-        char dbg[CS_PATH_MAX];
-        cs_path_join(dbg, sizeof(dbg), cfg->work_dir, "ocr_frame.png");
-        stbi_write_png(dbg, ow, oh, 1, gray, ow);
-    }
-    MeterReading best;
-    memset(&best, 0, sizeof(best));
-    int best_score = -1;
-    int calls = 0;
-    int64_t started = cs_now_ms();
-    bool strong = false;
-    /* Normal orientation first; mirror next because front-camera previews are
-     * commonly mirrored; then 180/flipped and finally quarter turns. */
-    const int modes[] = {0, 1, 2, 3, 4, 5, 6, 7};
-    for (size_t i = 0; i < CS_ARRAY_LEN(modes); i++) {
-        if (ocr_try_orientation(cfg, gray, ow, oh, modes[i],
-                                default_unit ? default_unit : "MHz", &best, &best_score,
-                                &calls)) {
-            strong = true;
-            break;
-        }
-        if (cs_now_ms() - started > 15000 || calls >= 40) break;
-    }
-    free(gray);
-    if (best_score < 12) {
-        snprintf(err, err_cap, "OCR found no readable frequency");
-        return false;
-    }
-    if (!cs_contains_ci(best.raw, "hz") && !strong) {
-        char unit[8];
-        detect_unit_ocr(cfg, rgb, w, h, unit, sizeof(unit));
-        if (unit[0]) {
-            double from = unit_scale(best.unit[0] ? best.unit : default_unit);
-            double to = unit_scale(unit);
-            if (from > 0 && to > 0) best.hz = best.hz / from * to;
-            cs_strlcpy(best.unit, unit, sizeof(best.unit));
-        }
-    }
-    *out = best;
-    err[0] = '\0';
-    return true;
 }
 
 double vlm_demo_hz(int64_t now_ms)
@@ -1059,13 +500,6 @@ bool vlm_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h, const char *defa
         snprintf(err, err_cap, "PNG encoding failed");
         return false;
     }
-    if (cfg->active == VLM_BACKEND_TESSERACT) {
-        bool ok = tesseract_read(cfg, rgb, w, h, default_unit ? default_unit : "MHz", out,
-                                 err, err_cap);
-        free(png);
-        return ok;
-    }
-
     char *b64 = cs_base64_encode((const uint8_t *)png, png_len);
     free(png);
     if (!b64) {
@@ -1074,9 +508,9 @@ bool vlm_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h, const char *defa
     }
     bool ok = false;
     if (cfg->active == VLM_BACKEND_OLLAMA)
-        ok = ollama_read(cfg, b64, out, err, err_cap);
+        ok = ollama_read(cfg, b64, default_unit, out, err, err_cap);
     else if (cfg->active == VLM_BACKEND_LLAMA)
-        ok = llama_read(cfg, b64, out, err, err_cap);
+        ok = llama_read(cfg, b64, default_unit, out, err, err_cap);
     else
         snprintf(err, err_cap, "Unsupported backend");
     free(b64);

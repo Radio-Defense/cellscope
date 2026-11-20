@@ -11,7 +11,6 @@ typedef enum {
     VLM_BACKEND_AUTO = 0,
     VLM_BACKEND_OLLAMA,
     VLM_BACKEND_LLAMA,
-    VLM_BACKEND_TESSERACT,
     VLM_BACKEND_MOCK,
     VLM_BACKEND_OFF
 } VlmBackend;
@@ -24,18 +23,14 @@ typedef struct {
     char label[80];
     char detail[1024];
     char error[512];
-    char tool_path[CS_PATH_MAX];
-    char work_dir[CS_PATH_MAX];
     bool available;
     bool is_vlm;
     bool probed;
     int64_t last_probe_ms;
 } VlmConfig;
 
-void vlm_config_init(VlmConfig *cfg, const char *mode, const char *url, const char *model,
-                     const char *work_dir);
+void vlm_config_init(VlmConfig *cfg, const char *mode, const char *url, const char *model);
 void vlm_config_probe(VlmConfig *cfg);
-void vlm_config_set_workdir(VlmConfig *cfg, const char *dir);
 
 /* rgb is tightly packed RGB24, w*h*3 bytes. png/png_len are optional; when
  * present they are the encoded frame and avoid a second encode. */

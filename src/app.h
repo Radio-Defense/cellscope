@@ -12,6 +12,7 @@
 #include "quality.h"
 #include "runtime.h"
 #include "server.h"
+#include "settings.h"
 #include "telephony.h"
 #include "train.h"
 #include "ui.h"
@@ -33,12 +34,14 @@ typedef struct {
 
 typedef struct {
     int64_t ts_ms;
+    uint64_t seq;
     char time_text[20];
     uint64_t hz;
     double confidence;
     char raw[180];
     char backend[48];
     char path[CS_PATH_MAX];
+    char shot_name[160];
     bool demo;
 } MeterSample;
 
@@ -97,12 +100,18 @@ typedef struct App {
     char vlm_model[128];
     char image_path[CS_PATH_MAX];
     char capture_dir[CS_PATH_MAX];
+    char datasets_dir[CS_PATH_MAX];
+    char session_dir[CS_PATH_MAX];
+    char session_name[64];
     char asset_dir[CS_PATH_MAX];
     char default_unit[8];
     int camera_index;
+    bool camera_cli;
+    char download_model[256];
     char adb_override[CS_PATH_MAX];
     char adb_path[CS_PATH_MAX];
     char screenshot_path[CS_PATH_MAX];
+    char export_json_path[CS_PATH_MAX];
     int64_t screenshot_delay_ms;
     bool quit_after_screenshot;
     int64_t run_ms;
@@ -114,11 +123,13 @@ typedef struct App {
     Camera cam;
     bool camera_ok;
     char camera_error[512];
-    char ocr_dir[CS_PATH_MAX];
     char project_root[CS_PATH_MAX];
     PythonRuntime runtime;
     MiniMindServer server;
     RuntimeView runtime_view;
+    AppSettings settings;
+    char local_reader_label[128];
+    char local_reader_model[128];
     SDL_Thread *bootstrap_thread;
     bool runtime_enabled;
     bool retry_runtime;
@@ -142,9 +153,11 @@ typedef struct App {
     CellSample cells[CELL_MAX];
     int cell_head;
     int cell_count;
+    uint64_t cell_seq;
     MeterSample meters[METER_MAX];
     int meter_head;
     int meter_count;
+    uint64_t meter_seq;
     AdbStatus adb;
     ReaderView reader;
     bool ever_connected;
@@ -162,7 +175,17 @@ typedef struct App {
     int burst_count;
     int burst_next;
     uint64_t burst_seq;
-    bool force_capture;
+    bool paused;
+    bool session_active;
+    bool session_write_failed;
+    int64_t session_started_ms;
+    uint64_t session_cell_start;
+    uint64_t session_meter_start;
+    bool export_pending;
+    bool export_dialog_open;
+    int export_result;
+    char export_path[CS_PATH_MAX];
+    char export_default[CS_PATH_MAX];
 
     VlmConfig vlm;
     MeterTracker tracker;
@@ -206,8 +229,8 @@ void app_draw(App *app);
 void app_handle_event(App *app, const SDL_Event *e);
 void app_request_check(App *app);
 void app_retry_runtime(App *app);
-void app_request_capture(App *app);
-void app_export_csv(App *app);
+void app_toggle_pause(App *app);
+void app_export_json(App *app);
 void app_notify(App *app, bool error, const char *fmt, ...);
 void app_copy_diagnostics(App *app);
 void app_save_window_png(App *app, const char *path);

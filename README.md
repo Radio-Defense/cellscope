@@ -7,21 +7,26 @@ state and a webcam at the same time.
   TAC, eNB/CID, PCI, timing advance, NR/LTE ARFCN, band, bandwidth, CA,
   downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
   and their RSSI in dBm.
-- **Top left:** webcam preview with a meter alignment guide.
-- **Top right:** best-frame frequency reader. It captures a rolling burst of
-  frames, scores them for legibility, and sends the sharpest frame to a local
-  vision-language model. The reading is parsed, converted to Hz, and the exact
-  frame is saved.
-- **Bottom right:** timestamped frequency readings.
+- **Top left:** preview from the webcam attached to the local machine (never
+  the Android phone), with a meter alignment guide.
+- **Top right:** best-frame frequency reader. It continuously captures a rolling
+  burst of frames while ADB transfers run, scores them for legibility, and sends
+  the sharpest unused frame to a local vision-language model. The reading is
+  parsed, converted to Hz, and the exact frame is saved.
+- **Bottom right:** timestamped frequency readings, each with the filename of
+  its saved screenshot.
+- **Top centre:** a large play/pause control for both the local webcam pipeline
+  and ADB polling.
 - **On launch:** a step-by-step modal explains how to connect the phone over
   ADB. It only disappears when a device is authorized; failures show concrete
   fixes.
 - **First run:** CellScope installs its own private Python runtime, ML packages,
   and MiniMind assets, then starts the local reader bridge in the background.
+  A downloaded Hugging Face model recorded in `settings.json` takes precedence.
 
 Camera frames and readings stay local. No telemetry, no cloud inference, and no
 images are uploaded. The one-time runtime/model downloads come from uv's GitHub
-releases and ModelScope.
+releases, ModelScope, and Hugging Face if you download an HF model.
 
 ![CellScope demo](docs/screenshot-main.png)
 
@@ -34,11 +39,10 @@ releases and ModelScope.
 | 2D UI / text | SDL3 renderer + FreeType, small immediate-mode toolkit |
 | ADB | `adb` subprocess, captured with a hard timeout; telephony + Wi-Fi scans |
 | Reader HTTP | libcurl → Ollama or llama.cpp server (OpenAI-compatible) |
-| OCR fallback | Tesseract subprocess |
 | PNG | stb_image / stb_image_write |
 | Training | MiniMind-V submodule + a small Parquet converter |
 | Private runtime | uv-managed CPython 3.11 + venv, auto-installed on first run |
-| Local bridge | MiniMind-V PyTorch model behind an OpenAI-compatible HTTP endpoint |
+| Local bridge | MiniMind-V or Hugging Face Transformers model behind an OpenAI-compatible HTTP endpoint |
 
 ## Build
 
@@ -98,20 +102,23 @@ open build/cellscope.app
 ```
 
 Just running the binary is enough. On first use CellScope bootstraps its own
-local AI runtime, downloads the model files, and starts the MiniMind bridge in the
-background.
+local AI runtime, downloads the model files, and starts the local reader bridge
+in the background. If `settings.json` selects a downloaded Hugging Face model,
+that model is served instead of MiniMind.
 
-### First run: private Python + MiniMind
+### First run: private Python + local reader
 
 You do not need to install or prepare system Python, pip, virtualenv, uv, or
 ModelScope by hand. On the first GUI launch (when not using `--demo`,
 `--image`, or an explicit `--vlm`), CellScope:
 
-1. downloads a `uv` launcher into its application-data directory;
+1. downloads a `uv` launcher into its working directory;
 2. installs a private CPython 3.11 under that directory;
 3. creates a private virtual environment and installs
    `torch`, `torchvision`, `transformers==4.57.6`, `datasets==3.6.0`,
-   `numpy==1.26.4`, `pyarrow==23.0.0`, `Pillow`, `safetensors`, and `modelscope`;
+   `numpy==1.26.4`, `pyarrow==23.0.0`, `Pillow`, `safetensors`, `modelscope`,
+   `huggingface_hub`, `accelerate`, `sentencepiece`, `protobuf`, `timm`, and
+   `einops`;
 4. downloads the frozen SigLIP2 vision encoder and the MiniMind language/base
    SFT weights from ModelScope;
 5. starts this in the background with the private interpreter:
@@ -124,21 +131,34 @@ python scripts/serve_minimind_vlm.py \
   --port 8090
 ```
 
-The effective paths are absolute and point at the bundled MiniMind checkout. If
-`training/cellscope_meter_768.pth` does not exist yet, the same bridge starts
+The bundled MiniMind source is copied once into the working directory and the
+effective paths are absolute. If
+`<working-directory>/training/cellscope_meter_768.pth` does not exist yet, the same bridge starts
 with the downloaded baseline `sft_vlm_768.pth`; train with `--train` to replace
 it with a meter-specific checkpoint. A banner shows download/install progress.
-The app remains usable with the Tesseract fallback while setup runs.
+While setup runs, cell capture and the UI remain usable; meter readings start
+once a VLM is available.
 
-- macOS: `~/Library/Application Support/CellScope/runtime`
-- Linux: `~/.local/share/CellScope/runtime`
-- Windows: `%LOCALAPPDATA%\CellScope\runtime`
+The single working directory is:
 
-The setup log is `runtime/bootstrap.log`; the server log is
-`runtime/minimind-server.log`. Delete the runtime directory to force a clean
-reinstall. Training output defaults to `<project>/training` in a source
-checkout, or the app-data `training` directory in a packaged build. Override it
-with `CELLSCOPE_TRAINING_DIR`.
+- macOS/Linux: `~/.cellscope`
+- Windows: `%LOCALAPPDATA%\CellScope` (per-user app data; not Program Files)
+
+Everything the app downloads lives there:
+
+- `runtime/` — private Python, packages, `uv`, caches, `runtime/minimind/`
+  (code copy plus downloaded MiniMind assets);
+- `runtime/hf-models/` — downloaded Hugging Face snapshots;
+- `settings.json` — app settings;
+- `training/` — training output by default;
+- `datasets/` — one timestamped folder per capture session;
+- `cellscope.log`.
+
+The setup log is `runtime/bootstrap.log`; the reader log is
+`runtime/minimind-server.log` or `runtime/hf-server.log`. Delete `runtime/` to
+force a clean runtime reinstall. Override the working directory with
+`CELLSCOPE_HOME`, the runtime with `CELLSCOPE_RUNTIME_DIR`, training with
+`CELLSCOPE_TRAINING_DIR`, and capture output with `--capture-dir`.
 
 Useful flags:
 
@@ -152,19 +172,69 @@ cellscope --vlm ollama --vlm-model moondream
 ```
 
 `--vlm …`, `--demo`, `--image`, and `--no-runtime` disable the automatic
-MiniMind bootstrap. Set `CELLSCOPE_RUNTIME_DIR` to relocate the runtime and
+local-runtime bootstrap. Set `CELLSCOPE_RUNTIME_DIR` to relocate the runtime and
 `CELLSCOPE_RUNTIME_PACKAGES` to override the package list for development.
 
 ### Readers
 
-Without arguments the app attaches to the MiniMind bridge it started itself.
-If the private runtime cannot be installed, or when an explicit backend is
-requested, it falls back in this order:
+Without arguments the app attaches to the local bridge it started itself:
+the downloaded Hugging Face model when `settings.json` says `"hf"`, otherwise
+MiniMind. If the private runtime cannot be installed, or when an explicit
+backend is requested, it falls back in this order:
 
 1. **Ollama** with a vision-capable model (`--vlm ollama`)
 2. **llama.cpp server** exposing a recognized multimodal model (`--vlm llama`)
-3. **Tesseract OCR** fallback (requires `tesseract` on `PATH`)
-4. off
+3. off
+
+### Local Hugging Face model
+
+You can download a Hugging Face image-text-to-text model and make it the local
+webcam reader. The token comes from the environment and is never written to
+disk:
+
+```bash
+export HF_TOKEN=hf_...          # or HUGGINGFACE_HUB_TOKEN
+cellscope --download-model HuggingFaceTB/SmolVLM-256M-Instruct
+```
+
+The command:
+
+1. prepares CellScope's private Python runtime;
+2. downloads the full model snapshot into
+   `~/.cellscope/runtime/hf-models/` (or the platform equivalent);
+3. writes `settings.json` with the repo id, local snapshot path, port, and
+   device;
+4. exits.
+
+The next launch starts `scripts/serve_hf_vlm.py` with that snapshot and uses it
+for the webcam reading. The bridge is a generic local Transformers server; it
+is not an OpenAI cloud call. Supported token aliases are `HF_TOKEN`,
+`HUGGINGFACE_HUB_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`,
+`HUGGINGFACE_API_KEY`, `HF_API_KEY`, and `HF_API_TOKEN`. Public models work
+without a token; gated models need one.
+
+`settings.json` is in the CellScope working directory (override with
+`CELLSCOPE_SETTINGS`). On first run it is created with
+`"reader_backend": "minimind"`; the download command switches it to `"hf"`:
+
+```json
+{
+  "version": 1,
+  "reader_backend": "hf",
+  "hf_model": "HuggingFaceTB/SmolVLM-256M-Instruct",
+  "hf_model_path": "/…/runtime/hf-models/HuggingFaceTB__SmolVLM-256M-Instruct",
+  "hf_port": 8091,
+  "hf_device": "auto",
+  "camera_index": 0
+}
+```
+
+Set `reader_backend` back to `"minimind"` (or delete the file) to return to the
+MiniMind runtime. `hf_device` accepts `auto`, `cpu`, `mps`, or `cuda:0`;
+`hf_port` defaults to 8091. Not every Hugging Face VLM architecture is
+compatible; the bridge uses `AutoProcessor` plus
+`AutoModelForImageTextToText`/`AutoModelForVision2Seq`. It was tested with
+SmolVLM-256M-Instruct.
 
 Optional external tiny VLM (Ollama):
 
@@ -189,15 +259,10 @@ The reader prompt asks for JSON only:
 ```
 
 `reading` is converted to Hz in C. Supported units: `Hz`, `kHz`, `MHz`, `GHz`.
-If a bare number has no unit, `--unit` (default `MHz`) is used. Tesseract is a
-fallback, not a VLM. It now detects horizontal text bands instead of taking the
-first number in the frame, then tries eight mirror/rotation combinations
-(0°, 90°, 180°, 270°, each normal and horizontally mirrored). Candidate
-frequencies are scored by digits, unit and label context; implausible
-reflection artifacts are rejected instead of being recorded. This handles
-mirrored front-camera frames and sideways/upside-down screens. Set
-`CELLSCOPE_OCR_DEBUG=1` to keep `ocr_debug.txt`, `ocr_frame.png` and band crops
-under the capture directory's `.ocr` folder.
+If a bare number has no unit, `--unit` (default `MHz`) is used. There is no
+fallback reader: if no VLM is available, CellScope shows that the reader is
+offline and does not invent a frequency. The local HF/MiniMind bridge handles mirrored and
+rotated camera frames through the training augmentation and prompt.
 
 ### Burst capture and best-frame selection
 
@@ -212,10 +277,28 @@ scores each frame's central guide area for:
 - crushed shadows
 
 The reader consumes the highest-scoring unused frame, with a score threshold so
-a blank wall does not trigger OCR. When a reading is accepted, the screenshot is
-the exact best frame that produced it. The UI shows `burst 12/12 · best 90%`.
+a blank wall does not trigger the VLM. When a reading is accepted, the screenshot
+is the exact best frame that produced it and is written into the current dataset
+folder. The UI shows `burst 12/12 · best 90%`.
 
-![Burst best-frame selection](docs/screenshot-burst.png)
+### Capture sessions and datasets
+
+`~/.cellscope/datasets/` contains one timestamped folder per capture session
+(for example `20261120_193716/`). A session is created at launch and every time
+the play button resumes capture; pausing ends the current session. Each folder
+contains:
+
+```text
+datasets/20261120_193716/
+  phone.json       # bottom-left cell list entries for this session
+  meter.json       # bottom-right readings for this session
+  meter_*.png      # screenshot for every accepted reading
+```
+
+`phone.json` and `meter.json` are valid JSON arrays, rewritten after every new
+entry so they remain readable if the app stops. They contain only entries from
+that session. Screenshots live next to the JSON that references them.
+
 
 ### ADB connection
 
@@ -251,13 +334,13 @@ Each cell sample also carries the Wi-Fi scan visible at transfer time:
 - duplicate BSSIDs for the same SSID are merged, keeping the strongest RSSI;
 - SSIDs are never shown or exported. Each SSID is hashed with a random
   per-install salt stored at
-  `~/Library/Application Support/CellScope/wifi_salt.txt` (or the equivalent
-  app-data directory; if that location is not writable, `.wifi_salt` in the
-  capture directory), producing a stable numeric ID;
+  `~/.cellscope/.wifi_salt` (or the equivalent working directory; if that
+  location is not writable, `.wifi_salt` in the capture directory), producing a
+  stable numeric ID;
 - the full value is stored as a semicolon-delimited string:
   `1847293012:-42;99812345:-67;...` = `id:rssi_dbm` pairs, strongest first;
-- the UI shows the three strongest entries plus a `+N` count; the CSV `wifi`
-  column contains the complete string.
+- the UI shows the three strongest entries plus a `+N` count; the JSON `wifi`
+  field contains the complete string.
 
 `cmd wifi` needs Android 11+ and normally needs Wi-Fi and location services
 enabled. If the command is unavailable or returns no results, the column shows
@@ -270,12 +353,17 @@ received signal strength, not the AP's configured transmit power.
 |---|---|
 | `R` | reconnect ADB |
 | `C` | cycle cameras |
-| `E` | export CSV |
-| `F` | capture the best buffered frame now |
+| `E` | export both lists as JSON |
+| `Space` | play/pause webcam + ADB |
 | `Esc` | dismiss the connection modal |
 
-`Export CSV` writes both `readings_*.csv` and `cells_*.csv` to the capture
-directory. Captures default to `Pictures/CellScope` (or `--capture-dir`).
+**Export** opens the native save dialog with a `.json` filter and a default name
+such as `cellscope_<timestamp>.json`. The file contains both the `readings` and
+`cell_samples` arrays. Capture data defaults under `~/.cellscope/datasets/` (or
+`<--capture-dir>/datasets/`).
+
+The top bar also has **Upload** and **Settings** buttons; they are visible
+placeholders for later work.
 
 ## Training a meter reader with MiniMind-V
 
@@ -350,7 +438,7 @@ Useful options:
 | Option | Meaning |
 |---|---|
 | `--train-csv FILE` | choose the labels CSV explicitly |
-| `--train-out DIR` | output; default `<project>/training` (or app-data `training`) |
+| `--train-out DIR` | output; default `~/.cellscope/training` |
 | `--train-minimind PATH` | alternate MiniMind-V checkout |
 | `--train-unit UNIT` | unit for bare CSV numbers |
 | `--train-augment N` | extra handheld/augmented variants per image |
@@ -383,7 +471,7 @@ Under the hood the C binary:
 
 ### 4. Use the trained model with CellScope
 
-Nothing else is required. Once `training/cellscope_meter_768.pth` exists, the
+Nothing else is required. Once `<working-directory>/training/cellscope_meter_768.pth` exists, the
 next launch starts the bridge with it automatically:
 
 ```bash
@@ -406,8 +494,8 @@ and point an explicit backend at it with
 `--vlm llama --vlm-url http://127.0.0.1:8090`.
 
 > Training quality depends on the dataset. A 65M-parameter VLM is good at a
-> narrow, repetitive task like reading one meter model; it is not a general OCR
-> engine. Keep the training photos close to the deployment pose and verify with
+> narrow, repetitive task like reading one meter model; it is not a general
+> vision engine. Keep the training photos close to the deployment pose and verify with
 > real captures. The app's burst selector and two-consistent-readings rule
 > reduce accidental readings, but review recorded values.
 
@@ -425,7 +513,7 @@ Camera (SDL3) 8 fps                           │
 Burst ring (12) ── quality score ──► best unused frame
                                               │
                                               ▼
-                              MiniMind / Ollama / llama.cpp / Tesseract
+                              MiniMind / Hugging Face / Ollama / llama.cpp
                                               │  JSON / text
                                               ▼
                                     meter parser → Hz
@@ -439,7 +527,8 @@ Source map:
 
 | Path | Role |
 |---|---|
-| `src/app.c` | lifecycle, threads, ADB/VLM workers, burst, CSV, screenshots |
+| `src/app.c` | lifecycle, threads, ADB/VLM workers, burst, JSON export, screenshots |
+| `src/settings.c` / `src/hfmodel.c` | settings.json and Hugging Face model download |
 | `src/app_ui.c` | layout, camera panel, lists, modal, reader UI |
 | `src/ui.c` / `src/fonts.c` | renderer, text cache, widgets, rounded shapes |
 | `src/adb.c` / `src/proc.c` | device discovery, timeout-safe subprocesses |
@@ -447,11 +536,11 @@ Source map:
 | `src/camera.c` | SDL3 camera, permission handling, RGB snapshots |
 | `src/quality.c` | frame legibility scoring |
 | `src/meter.c` | unit parsing, stability tracker |
-| `src/vlm.c` | Ollama/llama server/Tesseract backends |
+| `src/vlm.c` | Ollama/llama server VLM backends |
 | `src/train.c` | `--train` pipeline |
 | `src/runtime.c` | uv/Python/venv/packages/model bootstrap |
-| `src/server.c` | MiniMind bridge spawn, health check, shutdown |
-| `scripts/` | Parquet builder and MiniMind-V inference bridge |
+| `src/server.c` | local bridge spawn, health check, shutdown |
+| `scripts/` | Parquet builder, MiniMind bridge, HF download/serve |
 | `third_party/minimind-v` | upstream training/vision code (submodule) |
 
 ## Tests
@@ -465,18 +554,26 @@ telephony dump, Wi-Fi scan parsing/anonymisation/deduplication, meter
 units/commas/JSON, stability/debouncing, frame-quality ordering, JSON helpers,
 base64, and frequency formatting.
 
-A camera-free end-to-end reader test:
+`--demo` runs the full UI with synthetic cell samples and a synthetic meter
+feed, with no phone or camera. A still image can be used with an external VLM:
 
 ```bash
-# generate a synthetic meter image, then:
 ./build/cellscope.app/Contents/MacOS/cellscope \
-  --image meter.png --vlm tesseract --no-modal \
-  --capture-dir /tmp/cellscope-test \
-  --screenshot /tmp/cellscope-test/app.png --screenshot-delay 5000
+  --image meter.png --vlm llama --vlm-url http://127.0.0.1:8080 --no-modal \
+  --capture-dir /tmp/cellscope-test
 ```
 
-`--demo` runs the full UI with synthetic cell samples and a synthetic meter
-feed, with no phone or camera.
+Headless JSON-export smoke test:
+
+```bash
+./build/cellscope.app/Contents/MacOS/cellscope --demo --no-modal --no-runtime \
+  --capture-dir /tmp/cellscope-export \
+  --export-json /tmp/cellscope-export.json
+python3 -m json.tool /tmp/cellscope-export.json >/dev/null
+```
+
+`--export-json PATH` writes both lists directly and exits; the GUI **Export**
+button uses the native save dialog instead.
 
 Runtime bootstrap smoke test (uses a light package set and does not download
 models):
@@ -494,11 +591,14 @@ CELLSCOPE_SKIP_MODELS=1 \
   `dumpsys`; CellScope cannot invent them.
 - Frequencies are derived from 3GPP band tables for common FDD/TDD bands.
   Unknown bands are shown as `—` rather than guessed.
-- The Tesseract fallback is not a VLM. It handles mirrored and rotated frames,
-  but heavy glare/reflections can still make it refuse a reading rather than
-  risk a false one. Prefer MiniMind for production.
-- Lists are in memory. Use **Export CSV** to persist; the CSV includes the full
-  anonymized `wifi` semicolon string.
+- There is no fallback reader. If the local VLM or an external VLM is
+  unavailable, the meter list stays empty; CellScope never guesses a reading.
+- Hugging Face support covers Transformers image-text-to-text checkpoints. GGUF,
+  exotic remote-code models, and models needing extra proprietary kernels may
+  not load; check `runtime/hf-server.log`.
+- Lists are in memory. Use **Export** to save both lists as JSON; each reading
+  includes its saved screenshot filename and path, and cell samples include the
+  full anonymized `wifi` semicolon string.
 - The Wi-Fi column uses Android's cached scan results. If Wi-Fi/location is off
   or the OEM blocks `cmd wifi`, the column remains empty.
 - First-run setup needs network and enough disk for PyTorch plus MiniMind

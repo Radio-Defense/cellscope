@@ -8,34 +8,47 @@
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "wifi.h"
+#include <SDL3/SDL_dialog.h>
 
 static void app_log(App *app, const char *fmt, ...);
+static void app_export_json_to(App *app, const char *path);
+static bool has_json_suffix(const char *path);
+static const char *file_basename(const char *path);
 static int SDLCALL cellscope_adb_thread(void *data);
 static int SDLCALL cellscope_vlm_thread(void *data);
 static int SDLCALL cellscope_bootstrap_thread(void *data);
+static void session_write_locked(App *app);
+static bool session_begin_locked(App *app);
+static void session_end_locked(App *app);
 
 static void cell_push_locked(App *app, const CellSample *s)
 {
+    CellSample copy = *s;
+    copy.seq = ++app->cell_seq;
     if (app->cell_count < CELL_MAX) {
         int idx = (app->cell_head + app->cell_count) % CELL_MAX;
-        app->cells[idx] = *s;
+        app->cells[idx] = copy;
         app->cell_count++;
     } else {
-        app->cells[app->cell_head] = *s;
+        app->cells[app->cell_head] = copy;
         app->cell_head = (app->cell_head + 1) % CELL_MAX;
     }
+    if (app->session_active) session_write_locked(app);
 }
 
 static void meter_push_locked(App *app, const MeterSample *m)
 {
+    MeterSample copy = *m;
+    copy.seq = ++app->meter_seq;
     if (app->meter_count < METER_MAX) {
         int idx = (app->meter_head + app->meter_count) % METER_MAX;
-        app->meters[idx] = *m;
+        app->meters[idx] = copy;
         app->meter_count++;
     } else {
-        app->meters[app->meter_head] = *m;
+        app->meters[app->meter_head] = copy;
         app->meter_head = (app->meter_head + 1) % METER_MAX;
     }
+    if (app->session_active) session_write_locked(app);
 }
 
 void app_add_cell(App *app, const CellSample *sample)
@@ -148,15 +161,14 @@ static void find_asset_dir(App *app)
 static void default_capture_dir(App *app)
 {
     if (app->capture_dir[0]) return;
-    const char *pics = SDL_GetUserFolder(SDL_FOLDER_PICTURES);
     char base[CS_PATH_MAX];
-    if (pics && *pics) {
-        cs_path_join(base, sizeof(base), pics, "CellScope");
+    if (cs_app_data_dir(base, sizeof(base))) {
+        cs_strlcpy(app->capture_dir, base, sizeof(app->capture_dir));
     } else {
         const char *bp = SDL_GetBasePath();
-        cs_path_join(base, sizeof(base), bp ? bp : ".", "captures");
+        cs_path_join(app->capture_dir, sizeof(app->capture_dir), bp ? bp : ".",
+                     "captures");
     }
-    cs_strlcpy(app->capture_dir, base, sizeof(app->capture_dir));
 }
 
 void app_print_usage(void)
@@ -178,25 +190,27 @@ void app_print_usage(void)
         "  --demo                 Synthetic phone + synthetic meter feed (no hardware)\n"
         "  --demo-phone           Synthetic cell samples only\n"
         "  --image PATH           Use a still image instead of a webcam (testing)\n"
+        "  --export-json PATH     Write both lists to JSON and exit (testing/automation)\n"
+        "  --download-model REPO  Download a Hugging Face VLM and make it the reader\n"
         "  --no-modal             Skip the startup connection modal\n"
         "  --no-camera            Do not open the webcam (headless/modal testing)\n"
         "  --no-runtime           Do not bootstrap the local MiniMind runtime\n"
         "  --setup-runtime        Install the local Python + MiniMind assets and exit\n"
         "  --auto-connect         Try to connect to adb immediately at startup\n"
-        "  --vlm MODE             auto | ollama | llama | tesseract | mock | off\n"
+        "  --vlm MODE             auto | ollama | llama | mock | off\n"
         "  --vlm-url URL          default http://127.0.0.1:11434 (Ollama)\n"
         "  --vlm-model NAME       e.g. moondream, qwen2.5vl:3b, SmolVLM-256M-Instruct\n"
         "  --unit UNIT            fallback unit when the meter shows no unit (MHz)\n"
         "  --camera N             camera index (default 0)\n"
         "  --adb PATH             path to the adb executable\n"
-        "  --capture-dir PATH     where screenshots and CSV exports are written\n"
+        "  --capture-dir PATH     root for datasets, screenshots, logs, and exports\n"
         "  --screenshot PATH      save a window screenshot and exit (testing)\n"
         "  --screenshot-delay MS  wait before the screenshot (default 2500)\n"
         "  --run-ms MS            exit after this many milliseconds\n"
         "  --help                 show this help\n\n"
         "By default the first run installs a private Python 3.11 + MiniMind runtime in\n"
-        "the CellScope application-data directory, then starts the local bridge on\n"
-        "port 8090. No --vlm arguments are needed. Use --vlm to attach an external\n"
+        "~/.cellscope (macOS/Linux) or %%LOCALAPPDATA%%/CellScope (Windows), then starts\n"
+        "the local bridge on port 8090. No --vlm arguments are needed. Use --vlm to attach an external\n"
         "backend instead (this disables the automatic runtime).\n\n"
         "Readers (small local VLMs, no cloud):\n"
         "  Ollama\n"
@@ -205,9 +219,15 @@ void app_print_usage(void)
         "  llama.cpp with SmolVLM (256M, ~290 MB)\n"
         "    llama-server -hf ggml-org/SmolVLM-256M-Instruct-GGUF --port 8080\n"
         "    cellscope --vlm llama --vlm-url http://127.0.0.1:8080\n"
-        "  Tesseract is used as an automatic OCR fallback if no VLM is running.\n\n"
+
+        "Local Hugging Face reader:\n"
+        "  export HF_TOKEN=hf_...\n"
+        "  cellscope --download-model HuggingFaceTB/SmolVLM-256M-Instruct\n"
+        "  # writes settings.json; the next launch serves it locally on port 8091\n\n"
         "Environment: CELLSCOPE_VLM, CELLSCOPE_VLM_URL, CELLSCOPE_VLM_MODEL,\n"
-        "             CELLSCOPE_DEFAULT_UNIT, CELLSCOPE_CAPTURE_DIR, ADB\n",
+        "             CELLSCOPE_DEFAULT_UNIT, CELLSCOPE_CAPTURE_DIR, CELLSCOPE_SETTINGS,\n"
+        "             CELLSCOPE_HOME\n"
+        "             HF_TOKEN / HUGGINGFACE_HUB_TOKEN, ADB\n",
         CELLSCOPE_VERSION);
 }
 
@@ -340,6 +360,10 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->no_runtime = true;
         } else if (strcmp(a, "--auto-connect") == 0) {
             app->auto_connect = true;
+        } else if (strcmp(a, "--download-model") == 0 && i + 1 < argc) {
+            cs_strlcpy(app->download_model, argv[++i], sizeof(app->download_model));
+        } else if (strcmp(a, "--export-json") == 0 && i + 1 < argc) {
+            cs_strlcpy(app->export_json_path, argv[++i], sizeof(app->export_json_path));
         } else if (strcmp(a, "--image") == 0 && i + 1 < argc) {
             cs_strlcpy(app->image_path, argv[++i], sizeof(app->image_path));
             app->image_mode = true;
@@ -356,6 +380,7 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
         } else if (strcmp(a, "--unit") == 0 && i + 1 < argc) {
             cs_strlcpy(app->default_unit, argv[++i], sizeof(app->default_unit));
         } else if (strcmp(a, "--camera") == 0 && i + 1 < argc) {
+            app->camera_cli = true;
             if (!parse_int(argv[++i], &app->camera_index)) {
                 snprintf(err, err_cap, "Invalid camera index");
                 return APP_ARGS_ERROR;
@@ -402,6 +427,15 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
     }
     if (app->image_mode && !cs_file_exists(app->image_path)) {
         snprintf(err, err_cap, "Image not found: %s", app->image_path);
+        return APP_ARGS_ERROR;
+    }
+    if (app->vlm_mode[0] && strcmp(app->vlm_mode, "auto") != 0 &&
+        strcmp(app->vlm_mode, "ollama") != 0 && strcmp(app->vlm_mode, "llama") != 0 &&
+        strcmp(app->vlm_mode, "llama-server") != 0 &&
+        strcmp(app->vlm_mode, "mock") != 0 && strcmp(app->vlm_mode, "off") != 0) {
+        snprintf(err, err_cap,
+                 "Unsupported --vlm mode: %s (use auto, ollama, llama, mock, or off)",
+                 app->vlm_mode);
         return APP_ARGS_ERROR;
     }
     return APP_ARGS_OK;
@@ -529,6 +563,15 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     app->win = win;
     app->ren = ren;
     app->started_ms = cs_now_ms();
+    app->paused = getenv("CELLSCOPE_START_PAUSED") != NULL;
+    char settings_err[512] = {0};
+    if (settings_load(&app->settings, settings_err, sizeof(settings_err))) {
+        if (!app->camera_cli) app->camera_index = app->settings.camera_index;
+    } else {
+        app_log(app, "settings load failed: %s", settings_err);
+    }
+    cs_strlcpy(app->local_reader_label, "MiniMind · local", sizeof(app->local_reader_label));
+    cs_strlcpy(app->local_reader_model, "minimind-meter", sizeof(app->local_reader_model));
     app->wifi_salt = load_wifi_salt(app->capture_dir);
     app->selected_meter = -1;
     app->cell_follow = true;
@@ -588,9 +631,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         app->adb.busy = false;
     }
 
-    cs_path_join(app->ocr_dir, sizeof(app->ocr_dir), app->capture_dir, ".ocr");
-    cs_mkdirs(app->ocr_dir);
-    vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model, app->ocr_dir);
+    vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model);
     app->last_probe_ms = 0;
 
     cs_strlcpy(app->project_root, cs_project_root(), sizeof(app->project_root));
@@ -631,6 +672,18 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         SDL_UnlockMutex(app->mu);
     }
     if (app->demo) app_seed_demo(app);
+    if (!app->paused) {
+        SDL_LockMutex(app->mu);
+        bool session_ok = session_begin_locked(app);
+        SDL_UnlockMutex(app->mu);
+        if (!session_ok)
+            app_notify(app, true, "Could not create a dataset folder under %s",
+                       app->datasets_dir);
+    }
+    if (app->export_json_path[0]) {
+        app_export_json_to(app, app->export_json_path);
+        SDL_SetAtomicInt(&app->quit, 1);
+    }
 
     if (app->auto_connect && !app->demo) app->want_check = true;
 
@@ -667,6 +720,11 @@ void app_shutdown(App *app)
     if (app->vlm_thread) {
         SDL_WaitThread(app->vlm_thread, NULL);
         app->vlm_thread = NULL;
+    }
+    if (app->mu) {
+        SDL_LockMutex(app->mu);
+        session_end_locked(app);
+        SDL_UnlockMutex(app->mu);
     }
     camera_close(&app->cam);
     if (app->img_tex) SDL_DestroyTexture(app->img_tex);
@@ -705,6 +763,23 @@ static void publish_frame(App *app, const uint8_t *rgb, int w, int h, int64_t ts
 void app_update(App *app)
 {
     int64_t now = cs_now_ms();
+    bool export_pending = false;
+    int export_result = 0;
+    char export_path[CS_PATH_MAX] = {0};
+    SDL_LockMutex(app->mu);
+    if (app->export_pending) {
+        export_pending = true;
+        export_result = app->export_result;
+        cs_strlcpy(export_path, app->export_path, sizeof(export_path));
+        app->export_pending = false;
+        app->export_result = 0;
+    }
+    SDL_UnlockMutex(app->mu);
+    if (export_pending) {
+        if (export_result == 1) app_export_json_to(app, export_path);
+        else if (export_result == 2) app_notify(app, true, "Could not open the save dialog.");
+    }
+
     RuntimeView rv;
     SDL_LockMutex(app->mu);
     rv = app->runtime_view;
@@ -712,23 +787,25 @@ void app_update(App *app)
     app->ui_banner_h = (rv.active || rv.error) ? 38 : 0;
     if (rv.server_ready && !app->runtime_toasted) {
         app->runtime_toasted = true;
-        app_notify(app, false, "MiniMind reader online — %s", rv.server_label);
+        app_notify(app, false, "Local reader online — %s", rv.server_label);
     }
     if (!rv.server_ready && app->runtime_toasted) app->runtime_toasted = false;
 
-    if (app->image_mode && app->img_rgb) {
-        if (now - app->last_snapshot_ms >= 400) {
-            publish_frame(app, app->img_rgb, app->img_w, app->img_h, cs_epoch_ms());
-            app->last_snapshot_ms = now;
-        }
-    } else if (!app->demo && app->camera_ok) {
-        camera_update(&app->cam);
-        if (app->cam.rgb && app->cam.rgb_ms != app->last_camera_rgb_ms &&
-            now - app->last_snapshot_ms >= 40) {
-            publish_frame(app, app->cam.rgb, app->cam.rgb_w, app->cam.rgb_h,
-                          app->cam.rgb_ms);
-            app->last_camera_rgb_ms = app->cam.rgb_ms;
-            app->last_snapshot_ms = now;
+    if (!app->paused) {
+        if (app->image_mode && app->img_rgb) {
+            if (now - app->last_snapshot_ms >= 400) {
+                publish_frame(app, app->img_rgb, app->img_w, app->img_h, cs_epoch_ms());
+                app->last_snapshot_ms = now;
+            }
+        } else if (!app->demo && app->camera_ok) {
+            camera_update(&app->cam);
+            if (app->cam.rgb && app->cam.rgb_ms != app->last_camera_rgb_ms &&
+                now - app->last_snapshot_ms >= 40) {
+                publish_frame(app, app->cam.rgb, app->cam.rgb_w, app->cam.rgb_h,
+                              app->cam.rgb_ms);
+                app->last_camera_rgb_ms = app->cam.rgb_ms;
+                app->last_snapshot_ms = now;
+            }
         }
     }
 
@@ -852,9 +929,22 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
     App *app = data;
     PythonRuntime *rt = &app->runtime;
     while (!SDL_GetAtomicInt(&app->quit)) {
+        bool hf_requested = strcmp(app->settings.reader_backend, "hf") == 0;
+        bool hf_usable = hf_requested && app->settings.hf_model_path[0] &&
+                         cs_is_dir(app->settings.hf_model_path);
+        if (hf_usable) {
+            char cfg[CS_PATH_MAX];
+            cs_path_join(cfg, sizeof(cfg), app->settings.hf_model_path, "config.json");
+            if (!cs_file_exists(cfg)) hf_usable = false;
+        }
+        if (hf_requested && !hf_usable)
+            app_log(app, "HF model configured but unavailable; using MiniMind fallback");
+
         runtime_publish(app, true, false, false, false, RT_STAGE_PREPARE, 0,
-                        "Preparing local AI runtime…", "", "", NULL);
-        bool ok = runtime_ensure(rt, runtime_progress_cb, app, true);
+                        hf_usable ? "Preparing the Hugging Face reader…"
+                                  : "Preparing local AI runtime…",
+                        "", "", NULL);
+        bool ok = runtime_ensure(rt, runtime_progress_cb, app, !hf_usable);
         if (SDL_GetAtomicInt(&app->quit)) break;
         if (!ok) {
             runtime_publish(app, true, false, true, false, RT_STAGE_ERROR, rt->percent,
@@ -863,50 +953,102 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
             continue;
         }
 
-        char custom[CS_PATH_MAX];
-        bool custom_ok = runtime_custom_checkpoint(rt, custom, sizeof(custom));
-        char outdir[CS_PATH_MAX];
-        cs_path_join(outdir, sizeof(outdir), rt->minimind, "out");
-        const char *weight = custom_ok ? "cellscope_meter" : "sft_vlm";
-        const char *save_dir = custom_ok ? rt->training : outdir;
-        const char *label = custom_ok ? "MiniMind · trained" : "MiniMind · baseline";
+        bool hf = hf_usable;
+        char label[192];
+        char model_id[64] = "minimind-meter";
+        char script[CS_PATH_MAX], log[CS_PATH_MAX];
+        char detail[1200] = {0};
+        char loading[512] = {0};
+        const char *weight = NULL;
+        const char *save_dir = NULL;
+        int port = rt->port;
 
-        runtime_publish(app, true, true, false, false, RT_STAGE_READY, 98,
-                        "Loading the MiniMind checkpoint…",
-                        custom_ok ? "Using your trained cellscope_meter checkpoint."
-                                  : "No trained checkpoint yet — using the baseline MiniMind "
-                                    "SFT model. Train with --train for meter accuracy.",
+        if (hf) {
+            snprintf(label, sizeof(label), "HF · %s", app->settings.hf_model[0]
+                                                        ? app->settings.hf_model
+                                                        : "local model");
+            cs_strlcpy(model_id, "cellscope-hf", sizeof(model_id));
+            port = app->settings.hf_port;
+            cs_path_join(script, sizeof(script), rt->scripts, "serve_hf_vlm.py");
+            cs_path_join(log, sizeof(log), rt->dir, "hf-server.log");
+            snprintf(loading, sizeof(loading), "Loading %s…",
+                     app->settings.hf_model[0] ? app->settings.hf_model : "HF model");
+            snprintf(detail, sizeof(detail),
+                     "Serving the downloaded Hugging Face snapshot from %s.",
+                     app->settings.hf_model_path);
+        } else {
+            char custom[CS_PATH_MAX];
+            bool custom_ok = runtime_custom_checkpoint(rt, custom, sizeof(custom));
+            char outdir[CS_PATH_MAX];
+            cs_path_join(outdir, sizeof(outdir), rt->minimind, "out");
+            weight = custom_ok ? "cellscope_meter" : "sft_vlm";
+            save_dir = custom_ok ? rt->training : outdir;
+            cs_strlcpy(label, custom_ok ? "MiniMind · trained" : "MiniMind · baseline",
+                       sizeof(label));
+            cs_path_join(script, sizeof(script), rt->scripts, "serve_minimind_vlm.py");
+            cs_path_join(log, sizeof(log), rt->dir, "minimind-server.log");
+            if (custom_ok) {
+                cs_strlcpy(loading, "Loading the MiniMind checkpoint…", sizeof(loading));
+                cs_strlcpy(detail, "Using your trained cellscope_meter checkpoint.",
+                           sizeof(detail));
+            } else {
+                cs_strlcpy(loading, "Loading the baseline MiniMind checkpoint…",
+                           sizeof(loading));
+                cs_strlcpy(detail,
+                           "No trained checkpoint yet — using the baseline MiniMind SFT "
+                           "model. Train with --train for meter accuracy.",
+                           sizeof(detail));
+            }
+            if (hf_requested && !hf_usable) {
+                cs_strlcat(detail, " The configured HF model was unavailable; falling back.",
+                           sizeof(detail));
+            }
+        }
+
+        runtime_publish(app, true, true, false, false, RT_STAGE_READY, 98, loading, detail,
                         "", label);
         server_stop(&app->server);
         char serr[1024] = {0};
-        char script[CS_PATH_MAX], log[CS_PATH_MAX];
-        cs_path_join(script, sizeof(script), rt->scripts, "serve_minimind_vlm.py");
-        cs_path_join(log, sizeof(log), rt->dir, "minimind-server.log");
-        if (!server_start(&app->server, rt->python, script, rt->minimind, save_dir, weight,
-                          rt->port, log, serr, sizeof(serr))) {
+        bool started = false;
+        if (hf) {
+            started = server_start_hf(&app->server, rt->python, script,
+                                      app->settings.hf_model_path, port,
+                                      app->settings.hf_device, log, serr, sizeof(serr));
+        } else {
+            started = server_start(&app->server, rt->python, script, rt->minimind,
+                                   save_dir, weight, port, log, serr, sizeof(serr));
+        }
+        if (!started) {
             runtime_publish(app, true, true, true, false, RT_STAGE_ERROR, 98,
-                            "MiniMind server could not start", "", serr, NULL);
+                            hf ? "Hugging Face reader could not start"
+                               : "MiniMind server could not start",
+                            "", serr, NULL);
             runtime_wait_retry(app);
             continue;
         }
-        if (!server_wait_ready(&app->server, 180000, &rt->cancel)) {
+        int timeout = hf ? 900000 : 180000;
+        if (!server_wait_ready(&app->server, timeout, &rt->cancel)) {
             runtime_publish(app, true, true, true, false, RT_STAGE_ERROR, 98,
-                            "MiniMind server did not become ready",
+                            hf ? "Hugging Face reader did not become ready"
+                               : "MiniMind server did not become ready",
                             app->server.error, app->server.error, NULL);
             server_stop(&app->server);
             runtime_wait_retry(app);
             continue;
         }
         char url[128];
-        snprintf(url, sizeof(url), "http://127.0.0.1:%d", rt->port);
+        snprintf(url, sizeof(url), "http://127.0.0.1:%d", port);
         SDL_LockMutex(app->mu);
         app->prefer_minimind = true;
         app->vlm_switched = false;
         cs_strlcpy(app->minimind_url, url, sizeof(app->minimind_url));
+        cs_strlcpy(app->local_reader_label, label, sizeof(app->local_reader_label));
+        cs_strlcpy(app->local_reader_model, model_id, sizeof(app->local_reader_model));
         SDL_UnlockMutex(app->mu);
         runtime_publish(app, false, true, false, true, RT_STAGE_READY, 100,
-                        "MiniMind reader ready", "", "", label);
-        app_log(app, "minimind server ready: %s (%s)", url, label);
+                        hf ? "Hugging Face reader ready" : "MiniMind reader ready", "", "",
+                        label);
+        app_log(app, "%s reader ready: %s (%s)", hf ? "HF" : "MiniMind", url, label);
 
         int failures = 0;
         while (!SDL_GetAtomicInt(&app->quit)) {
@@ -921,7 +1063,7 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
             app->prefer_minimind = false;
             SDL_UnlockMutex(app->mu);
             runtime_publish(app, true, true, true, false, RT_STAGE_ERROR, 100,
-                            "MiniMind server stopped", app->server.error,
+                            "Local reader server stopped", app->server.error,
                             "The local reader server stopped. Retrying…", label);
             server_stop(&app->server);
             break;
@@ -970,10 +1112,11 @@ static int SDLCALL cellscope_adb_thread(void *data)
     AdbState last_state = ADB_STATE_UNKNOWN;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
-        bool demo = false, want = false;
+        bool demo = false, want = false, paused = false;
         AdbStatus st;
         char path[CS_PATH_MAX], serial[96];
         SDL_LockMutex(app->mu);
+        paused = app->paused;
         demo = app->demo || app->demo_phone;
         st = app->adb;
         cs_strlcpy(path, app->adb_path, sizeof(path));
@@ -982,6 +1125,11 @@ static int SDLCALL cellscope_adb_thread(void *data)
         app->want_check = false;
         if (want) app->modal_checking = true;
         SDL_UnlockMutex(app->mu);
+
+        if (paused) {
+            SDL_Delay(120);
+            continue;
+        }
 
         if (demo) {
             if (now - app->last_demo_cell_ms >= 1000) {
@@ -1055,9 +1203,11 @@ static int SDLCALL cellscope_adb_thread(void *data)
                 s.ts_ms = cs_epoch_ms();
                 cs_strlcpy(s.source, st.model[0] ? st.model : serial, sizeof(s.source));
                 SDL_LockMutex(app->mu);
-                cell_push_locked(app, &s);
-                app->last_poll_ok_ms = cs_now_ms();
-                app->poll_failures = 0;
+                if (!app->paused) {
+                    cell_push_locked(app, &s);
+                    app->last_poll_ok_ms = cs_now_ms();
+                    app->poll_failures = 0;
+                }
                 SDL_UnlockMutex(app->mu);
             } else {
                 if (now - app->last_dump_save_ms > 10000) {
@@ -1103,23 +1253,42 @@ static int SDLCALL cellscope_vlm_thread(void *data)
     int64_t last_read = 0;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
+        bool paused = false;
+        SDL_LockMutex(app->mu);
+        paused = app->paused;
+        if (paused) {
+            app->reader.busy = false;
+            cs_strlcpy(app->reader.status, "Paused — press play to resume",
+                       sizeof(app->reader.status));
+        }
+        SDL_UnlockMutex(app->mu);
+        if (paused) {
+            SDL_Delay(120);
+            continue;
+        }
         bool prefer = false;
         char prefer_url[128] = {0};
+        char prefer_model[128] = {0};
+        char prefer_label[128] = {0};
         bool switched = false;
         SDL_LockMutex(app->mu);
         prefer = app->prefer_minimind && !app->vlm_explicit;
         cs_strlcpy(prefer_url, app->minimind_url, sizeof(prefer_url));
+        cs_strlcpy(prefer_model, app->local_reader_model, sizeof(prefer_model));
+        cs_strlcpy(prefer_label, app->local_reader_label, sizeof(prefer_label));
         switched = app->vlm_switched;
         SDL_UnlockMutex(app->mu);
 
         if (prefer && !switched) {
-            vlm_config_init(&app->vlm, "llama", prefer_url, "minimind-meter", app->ocr_dir);
+            vlm_config_init(&app->vlm, "llama", prefer_url,
+                            prefer_model[0] ? prefer_model : "minimind-meter");
             vlm_config_probe(&app->vlm);
             if (app->vlm.active == VLM_BACKEND_LLAMA) {
-                cs_strlcpy(app->vlm.label, "MiniMind · local", sizeof(app->vlm.label));
-                cs_strlcpy(app->vlm.detail,
-                           "Local MiniMind served by CellScope's private Python runtime.",
-                           sizeof(app->vlm.detail));
+                cs_strlcpy(app->vlm.label, prefer_label[0] ? prefer_label : "MiniMind · local",
+                           sizeof(app->vlm.label));
+                snprintf(app->vlm.detail, sizeof(app->vlm.detail),
+                         "%s served by CellScope's private Python runtime.",
+                         prefer_label[0] ? prefer_label : "MiniMind");
             }
             app->vlm_switched = true;
             SDL_LockMutex(app->mu);
@@ -1129,10 +1298,9 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             app->reader.is_vlm = app->vlm.is_vlm;
             cs_strlcpy(app->reader.status, "Connecting to MiniMind…", sizeof(app->reader.status));
             SDL_UnlockMutex(app->mu);
-            app_log(app, "switched to MiniMind server: %s", app->vlm.detail);
+            app_log(app, "switched to local reader server: %s", app->vlm.detail);
         } else if (!prefer && switched) {
-            vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model,
-                            app->ocr_dir);
+            vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model);
             vlm_config_probe(&app->vlm);
             app->vlm_switched = false;
             SDL_LockMutex(app->mu);
@@ -1169,19 +1337,16 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         }
 
         bool mock = app->vlm.active == VLM_BACKEND_MOCK;
-        int interval = app->vlm.active == VLM_BACKEND_TESSERACT ? 900 : 700;
+        int interval = 700;
         if (now - last_read < interval) {
             SDL_Delay(80);
             continue;
         }
 
         bool have = false;
-        bool force = false;
         int64_t frame_ts = 0;
         float frame_score = 0;
         SDL_LockMutex(app->mu);
-        force = app->force_capture;
-        app->force_capture = false;
         if (mock) {
             have = true;
         } else {
@@ -1194,7 +1359,7 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 if (!f->rgb) continue;
                 if (now_epoch - f->ts_ms > 6000) continue;
                 if (f->score > current_best) current_best = f->score;
-                if (f->used && !force) continue;
+                if (f->used) continue;
                 float age = (float)(now_epoch - f->ts_ms);
                 float effective = f->score + 0.03f * (1.0f - age / 6000.0f);
                 if (effective > best_score) {
@@ -1203,7 +1368,7 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 }
             }
             app->reader.best_score = current_best;
-            if (best >= 0 && (force || best_score >= 0.15f)) {
+            if (best >= 0 && best_score >= 0.15f) {
                 BurstFrame *f = &app->burst[best];
                 size_t bytes = (size_t)f->w * f->h * 3;
                 uint8_t *copy = realloc(rgb, bytes);
@@ -1255,8 +1420,14 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         MeterReading r;
         char err[512] = {0};
         int64_t frame_ms = 0;
-        bool ok = vlm_read(&app->vlm, rgb, rw, rh,
-                           app->default_unit, &r, &frame_ms, err, sizeof(err));
+        bool ok = vlm_read(&app->vlm, rgb, rw, rh, app->default_unit, &r, &frame_ms, err,
+                           sizeof(err));
+        bool paused_now = false;
+        SDL_LockMutex(app->mu);
+        paused_now = app->paused;
+        if (paused_now) app->reader.busy = false;
+        SDL_UnlockMutex(app->mu);
+        if (paused_now) continue;
         if (!ok) {
             SDL_LockMutex(app->mu);
             app->reader.busy = false;
@@ -1291,11 +1462,18 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         int stable = meter_tracker_stable(&app->tracker);
         char capture[CS_PATH_MAX] = {0};
         if (action == METER_TRACK_RECORD && rgb && rw > 0) {
+            char shot_dir[CS_PATH_MAX];
+            SDL_LockMutex(app->mu);
+            cs_strlcpy(shot_dir,
+                       app->session_active && app->session_dir[0] ? app->session_dir
+                                                                  : app->capture_dir,
+                       sizeof(shot_dir));
+            SDL_UnlockMutex(app->mu);
             char stamp[40];
             int64_t ts = frame_ts ? frame_ts : (frame_ms ? frame_ms : cs_epoch_ms());
             cs_format_date_stamp(ts, stamp, sizeof(stamp));
-            snprintf(capture, sizeof(capture), "%s/meter_%s_%03d.png", app->capture_dir,
-                     stamp, (int)(ts % 1000));
+            snprintf(capture, sizeof(capture), "%s/meter_%s_%03d.png", shot_dir, stamp,
+                     (int)(ts % 1000));
             if (!stbi_write_png(capture, rw, rh, 3, rgb, rw * 3)) capture[0] = '\0';
         }
 
@@ -1319,6 +1497,7 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             cs_strlcpy(ms.raw, r.raw, sizeof(ms.raw));
             cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
             cs_strlcpy(ms.path, capture, sizeof(ms.path));
+            cs_strlcpy(ms.shot_name, file_basename(capture), sizeof(ms.shot_name));
             ms.demo = app->vlm.active == VLM_BACKEND_MOCK;
             meter_push_locked(app, &ms);
             app_log(app, "meter reading recorded: %llu Hz (%s, %.2f)",
@@ -1354,12 +1533,41 @@ void app_request_check(App *app)
     app_notify(app, false, "Checking for an Android device…");
 }
 
-void app_request_capture(App *app)
+void app_toggle_pause(App *app)
 {
     SDL_LockMutex(app->mu);
-    app->force_capture = true;
+    bool pause_now = !app->paused;
+    bool session_ok = true;
+    if (pause_now) {
+        app->paused = true;
+        session_end_locked(app);
+        app->reader.busy = false;
+        cs_strlcpy(app->reader.status, "Paused — press play to resume",
+                   sizeof(app->reader.status));
+        for (int i = 0; i < BURST_MAX; i++) {
+            free(app->burst[i].rgb);
+            memset(&app->burst[i], 0, sizeof(app->burst[i]));
+        }
+        app->burst_count = 0;
+        app->burst_next = 0;
+        app->reader.burst_count = 0;
+    } else {
+        session_ok = session_begin_locked(app);
+        app->paused = false;
+        cs_strlcpy(app->reader.status, "Resuming camera and ADB…",
+                   sizeof(app->reader.status));
+    }
+    char session[CS_PATH_MAX];
+    cs_strlcpy(session, app->session_dir, sizeof(session));
     SDL_UnlockMutex(app->mu);
-    app_notify(app, false, "Capturing a frame for the reader…");
+    app_log(app, pause_now ? "paused" : "resumed");
+    if (pause_now) {
+        app_notify(app, false, "Paused webcam and ADB. Dataset saved to %s", session);
+    } else if (!session_ok) {
+        app_notify(app, true, "Resumed, but could not create a dataset folder.");
+    } else {
+        app_notify(app, false, "Capturing to %s", session);
+    }
 }
 
 void app_notify(App *app, bool error, const char *fmt, ...)
@@ -1397,105 +1605,251 @@ void app_copy_diagnostics(App *app)
     app_notify(app, false, "Diagnostics copied to the clipboard.");
 }
 
-static void csv_escape(FILE *f, const char *s)
+static const char *file_basename(const char *path)
 {
-    if (!s) s = "";
-    bool quote = strchr(s, ',') || strchr(s, '"') || strchr(s, '\n');
-    if (!quote) {
-        fputs(s, f);
-        return;
-    }
+    if (!path) return "";
+    const char *a = strrchr(path, '/');
+    const char *b = strrchr(path, '\\');
+    const char *p = NULL;
+    if (a && b) p = b > a ? b : a;
+    else p = a ? a : b;
+    return p ? p + 1 : path;
+}
+
+static bool has_json_suffix(const char *path)
+{
+    size_t n = path ? strlen(path) : 0;
+    return n >= 5 && (cs_ends_with(path, ".json") || cs_ends_with(path, ".JSON"));
+}
+
+static void json_write_string(FILE *f, const char *s)
+{
+    char esc[8192];
+    cs_json_escape(s, esc, sizeof(esc));
     fputc('"', f);
-    for (const char *p = s; *p; p++) {
-        if (*p == '"') fputc('"', f);
-        fputc(*p, f);
-    }
+    fputs(esc, f);
     fputc('"', f);
 }
 
-void app_export_csv(App *app)
+static void json_meter_obj(FILE *f, const MeterSample *m)
 {
-    char stamp[32];
-    cs_format_date_stamp(cs_epoch_ms(), stamp, sizeof(stamp));
-    char readings_path[CS_PATH_MAX], cells_path[CS_PATH_MAX];
-    snprintf(readings_path, sizeof(readings_path), "%s/readings_%s.csv", app->capture_dir,
-             stamp);
-    snprintf(cells_path, sizeof(cells_path), "%s/cells_%s.csv", app->capture_dir, stamp);
+    const char *shot = m->shot_name[0] ? m->shot_name : file_basename(m->path);
+    fprintf(f, "{\"timestamp_unix_ms\": %lld, \"seq\": %llu, \"time\": ",
+            (long long)m->ts_ms, (unsigned long long)m->seq);
+    json_write_string(f, m->time_text);
+    fprintf(f, ", \"frequency_hz\": %llu, \"frequency_ghz\": %.9f, "
+               "\"confidence\": %.3f, \"backend\": ",
+            (unsigned long long)m->hz, (double)m->hz / 1e9, m->confidence);
+    json_write_string(f, m->backend);
+    fputs(", \"raw\": ", f);
+    json_write_string(f, m->raw);
+    fputs(", \"screenshot\": ", f);
+    json_write_string(f, shot);
+    fputs(", \"screenshot_path\": ", f);
+    json_write_string(f, m->path);
+    fprintf(f, ", \"demo\": %s}", m->demo ? "true" : "false");
+}
 
-    SDL_LockMutex(app->mu);
-    FILE *fm = fopen(readings_path, "w");
-    if (fm) {
-        fputs("timestamp_unix_ms,time,frequency_hz,confidence,backend,raw,screenshot\n",
-              fm);
-        for (int i = 0; i < app->meter_count; i++) {
-            const MeterSample *m = &app->meters[(app->meter_head + i) % METER_MAX];
-            fprintf(fm, "%lld,%s,%llu,%.3f,", (long long)m->ts_ms, m->time_text,
-                    (unsigned long long)m->hz, m->confidence);
-            csv_escape(fm, m->backend);
-            fputc(',', fm);
-            csv_escape(fm, m->raw);
-            fputc(',', fm);
-            csv_escape(fm, m->path);
-            fputc('\n', fm);
-        }
-        fclose(fm);
-    }
-    FILE *fc = fopen(cells_path, "w");
-    if (fc) {
-        fputs("timestamp_unix_ms,plmn,mcc,mnc,operator,country,tac,rat,enb,cid,pci,ta,arfcn,"
-              "band,bw,ca,f_dl_mhz,f_ul_mhz,wifi,source\n",
-              fc);
+static void json_cell_obj(FILE *f, const CellSample *c)
+{
+    char time[24];
+    cs_format_time(c->ts_ms, time, sizeof(time));
+    fprintf(f, "{\"timestamp_unix_ms\": %lld, \"seq\": %llu, \"time\": ",
+            (long long)c->ts_ms, (unsigned long long)c->seq);
+    json_write_string(f, time);
+    fputs(", \"plmn\": ", f); json_write_string(f, c->plmn);
+    fputs(", \"mcc\": ", f); json_write_string(f, c->mcc);
+    fputs(", \"mnc\": ", f); json_write_string(f, c->mnc);
+    fputs(", \"operator\": ", f); json_write_string(f, c->operator_name);
+    fputs(", \"country\": ", f); json_write_string(f, c->country);
+    fputs(", \"tac\": ", f); json_write_string(f, c->tac);
+    fputs(", \"rat\": ", f); json_write_string(f, c->rat);
+    fputs(", \"enb\": ", f); json_write_string(f, c->enb);
+    fputs(", \"cid\": ", f); json_write_string(f, c->cid);
+    fputs(", \"pci\": ", f); json_write_string(f, c->pci);
+    fputs(", \"ta\": ", f); json_write_string(f, c->ta);
+    fputs(", \"arfcn\": ", f); json_write_string(f, c->arfcn);
+    fputs(", \"band\": ", f); json_write_string(f, c->band);
+    fputs(", \"bandwidth\": ", f); json_write_string(f, c->bw);
+    fprintf(f, ", \"ca\": %s, \"dl_frequency\": ", c->ca ? "true" : "false");
+    json_write_string(f, c->f_dl);
+    fputs(", \"ul_frequency\": ", f); json_write_string(f, c->f_ul);
+    fputs(", \"wifi\": ", f); json_write_string(f, c->wifi);
+    fputs(", \"source\": ", f); json_write_string(f, c->source);
+    fprintf(f, ", \"demo\": %s}", c->demo ? "true" : "false");
+}
+
+/* Rewrite the two session files as valid JSON arrays after every new sample.
+ * Datasets are small (a few thousand rows at 1 Hz), so this keeps the files
+ * crash-safe and always parseable without a trailing-comma dance. */
+static void session_write_locked(App *app)
+{
+    if (!app->session_active || !app->session_dir[0] || app->session_write_failed)
+        return;
+    char path[CS_PATH_MAX];
+    FILE *f = NULL;
+    bool failed = false;
+    cs_path_join(path, sizeof(path), app->session_dir, "phone.json");
+    f = fopen(path, "wb");
+    if (!f) {
+        failed = true;
+    } else {
+        fputs("[\n", f);
+        bool first = true;
         for (int i = 0; i < app->cell_count; i++) {
             const CellSample *c = &app->cells[(app->cell_head + i) % CELL_MAX];
-            fprintf(fc, "%lld,", (long long)c->ts_ms);
-            csv_escape(fc, c->plmn);
-            fputc(',', fc);
-            csv_escape(fc, c->mcc);
-            fputc(',', fc);
-            csv_escape(fc, c->mnc);
-            fputc(',', fc);
-            csv_escape(fc, c->operator_name);
-            fputc(',', fc);
-            csv_escape(fc, c->country);
-            fputc(',', fc);
-            csv_escape(fc, c->tac);
-            fputc(',', fc);
-            csv_escape(fc, c->rat);
-            fputc(',', fc);
-            csv_escape(fc, c->enb);
-            fputc(',', fc);
-            csv_escape(fc, c->cid);
-            fputc(',', fc);
-            csv_escape(fc, c->pci);
-            fputc(',', fc);
-            csv_escape(fc, c->ta);
-            fputc(',', fc);
-            csv_escape(fc, c->arfcn);
-            fputc(',', fc);
-            csv_escape(fc, c->band);
-            fputc(',', fc);
-            csv_escape(fc, c->bw);
-            fprintf(fc, ",%d,", c->ca ? 1 : 0);
-            csv_escape(fc, c->f_dl);
-            fputc(',', fc);
-            csv_escape(fc, c->f_ul);
-            fputc(',', fc);
-            csv_escape(fc, c->wifi);
-            fputc(',', fc);
-            csv_escape(fc, c->source);
-            fputc('\n', fc);
+            if (c->seq < app->session_cell_start) continue;
+            if (!first) fputs(",\n", f);
+            json_cell_obj(f, c);
+            first = false;
         }
-        fclose(fc);
+        fputs("\n]\n", f);
+        if (ferror(f) || fclose(f) != 0) failed = true;
     }
-    int reading_count = app->meter_count;
-    int cell_count = app->cell_count;
-    SDL_UnlockMutex(app->mu);
-    if (fm || fc) {
-        app_notify(app, false, "Exported %d readings and %d cell samples to %s",
-                   reading_count, cell_count, app->capture_dir);
+    cs_path_join(path, sizeof(path), app->session_dir, "meter.json");
+    f = fopen(path, "wb");
+    if (!f) {
+        failed = true;
     } else {
-        app_notify(app, true, "Could not write CSV files to %s", app->capture_dir);
+        fputs("[\n", f);
+        bool first = true;
+        for (int i = 0; i < app->meter_count; i++) {
+            const MeterSample *m = &app->meters[(app->meter_head + i) % METER_MAX];
+            if (m->seq < app->session_meter_start) continue;
+            if (!first) fputs(",\n", f);
+            json_meter_obj(f, m);
+            first = false;
+        }
+        fputs("\n]\n", f);
+        if (ferror(f) || fclose(f) != 0) failed = true;
     }
+    if (failed) {
+        app->session_write_failed = true;
+        app_log(app, "session JSON write failed in %s", app->session_dir);
+    }
+}
+
+static bool session_begin_locked(App *app)
+{
+    if (app->session_active) return true;
+    if (!app->datasets_dir[0]) {
+        cs_path_join(app->datasets_dir, sizeof(app->datasets_dir), app->capture_dir,
+                     "datasets");
+    }
+    if (!cs_mkdirs(app->datasets_dir)) return false;
+    char stamp[32], name[64];
+    cs_format_date_stamp(cs_epoch_ms(), stamp, sizeof(stamp));
+    cs_strlcpy(name, stamp, sizeof(name));
+    for (int i = 2; i < 1000; i++) {
+        char candidate[CS_PATH_MAX];
+        cs_path_join(candidate, sizeof(candidate), app->datasets_dir, name);
+        if (!cs_is_dir(candidate)) break;
+        snprintf(name, sizeof(name), "%s_%d", stamp, i);
+    }
+    cs_path_join(app->session_dir, sizeof(app->session_dir), app->datasets_dir, name);
+    if (!cs_mkdirs(app->session_dir)) return false;
+    cs_strlcpy(app->session_name, name, sizeof(app->session_name));
+    app->session_started_ms = cs_epoch_ms();
+    app->session_cell_start = app->cell_seq + 1;
+    app->session_meter_start = app->meter_seq + 1;
+    app->session_write_failed = false;
+    app->session_active = true;
+    session_write_locked(app);
+    return !app->session_write_failed;
+}
+
+static void session_end_locked(App *app)
+{
+    if (!app->session_active) return;
+    session_write_locked(app);
+    app->session_active = false;
+}
+
+static void app_export_json_to(App *app, const char *path)
+{
+    char final_path[CS_PATH_MAX];
+    cs_strlcpy(final_path, path, sizeof(final_path));
+    if (!has_json_suffix(final_path) && strlen(final_path) + 5 < sizeof(final_path))
+        cs_strlcat(final_path, ".json", sizeof(final_path));
+    path = final_path;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        app_notify(app, true, "Could not write %s", path);
+        return;
+    }
+    int64_t exported = cs_epoch_ms();
+    int readings = 0, cells = 0;
+    SDL_LockMutex(app->mu);
+    fprintf(f,
+            "{\n  \"app\": \"CellScope\",\n  \"exported_at_unix_ms\": %lld,\n"
+            "  \"readings\": [\n",
+            (long long)exported);
+    for (int i = 0; i < app->meter_count; i++) {
+        const MeterSample *m = &app->meters[(app->meter_head + i) % METER_MAX];
+        if (i) fputs(",\n", f);
+        fputs("    ", f);
+        json_meter_obj(f, m);
+        readings++;
+    }
+    fputs("\n  ],\n  \"cell_samples\": [\n", f);
+    for (int i = 0; i < app->cell_count; i++) {
+        const CellSample *c = &app->cells[(app->cell_head + i) % CELL_MAX];
+        if (i) fputs(",\n", f);
+        fputs("    ", f);
+        json_cell_obj(f, c);
+        cells++;
+    }
+    fputs("\n  ]\n}\n", f);
+    SDL_UnlockMutex(app->mu);
+    bool ok = !ferror(f);
+    if (fclose(f) != 0) ok = false;
+    if (ok) {
+        app_log(app, "exported JSON: %s", path);
+        app_notify(app, false, "Exported %d readings and %d cell samples to %s", readings,
+                   cells, path);
+    } else {
+        app_notify(app, true, "Could not finish writing %s", path);
+    }
+}
+
+static void SDLCALL export_dialog_cb(void *userdata, const char * const *filelist,
+                                     int filter)
+{
+    (void)filter;
+    App *app = userdata;
+    SDL_LockMutex(app->mu);
+    app->export_dialog_open = false;
+    app->export_pending = true;
+    if (!filelist) {
+        app->export_result = 2;
+    } else if (!filelist[0]) {
+        app->export_result = 3;
+    } else {
+        app->export_result = 1;
+        cs_strlcpy(app->export_path, filelist[0], sizeof(app->export_path));
+    }
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_export_json(App *app)
+{
+    SDL_LockMutex(app->mu);
+    bool open = app->export_dialog_open;
+    SDL_UnlockMutex(app->mu);
+    if (open) {
+        app_notify(app, false, "The export dialog is already open.");
+        return;
+    }
+    char stamp[32];
+    cs_format_date_stamp(cs_epoch_ms(), stamp, sizeof(stamp));
+    SDL_LockMutex(app->mu);
+    snprintf(app->export_default, sizeof(app->export_default), "%s/cellscope_%s.json",
+             app->capture_dir, stamp);
+    app->export_dialog_open = true;
+    SDL_UnlockMutex(app->mu);
+    static const SDL_DialogFileFilter filter = {"JSON file", "json"};
+    SDL_ShowSaveFileDialog(export_dialog_cb, app, app->win, &filter, 1,
+                           app->export_default);
 }
 
 void app_save_window_png(App *app, const char *path)
@@ -1549,10 +1903,10 @@ void app_handle_event(App *app, const SDL_Event *e)
                 }
                 break;
             case SDLK_E:
-                app_export_csv(app);
+                app_export_json(app);
                 break;
-            case SDLK_F:
-                app_request_capture(app);
+            case SDLK_SPACE:
+                if (!app->modal_open) app_toggle_pause(app);
                 break;
             default:
                 break;

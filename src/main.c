@@ -6,6 +6,7 @@
 
 #include "app.h"
 #include "runtime.h"
+#include "hfmodel.h"
 #include "train.h"
 
 #include <curl/curl.h>
@@ -70,6 +71,16 @@ int main(int argc, char **argv)
 
     if (app->train_mode) {
         int rc = train_run(&app->train);
+        free(app);
+        curl_global_cleanup();
+        return rc;
+    }
+
+    if (app->download_model[0]) {
+        char derr[1024] = {0};
+        int rc = hf_model_download(app->download_model, console_runtime_progress, NULL, derr,
+                                   sizeof(derr));
+        if (rc != 0) fprintf(stderr, "CellScope model download: %s\n", derr);
         free(app);
         curl_global_cleanup();
         return rc;
@@ -140,6 +151,10 @@ int main(int argc, char **argv)
         }
 
         app_update(app);
+        if (SDL_GetAtomicInt(&app->quit)) {
+            running = false;
+            break;
+        }
 
         ui_begin_frame(&app->ui, logical_w, logical_h);
         app_draw(app);

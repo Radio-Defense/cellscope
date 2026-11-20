@@ -8,6 +8,7 @@
 
 typedef struct {
     int64_t ts_ms;
+    uint64_t seq;
     char plmn[8];
     char mcc[4];
     char mnc[4];

@@ -95,19 +95,92 @@ static void pick_training_dir(PythonRuntime *rt)
         return;
     }
     char candidate[CS_PATH_MAX];
-    char cmake[CS_PATH_MAX];
-    cs_path_join(cmake, sizeof(cmake), rt->project_root, "CMakeLists.txt");
-    bool source_checkout = cs_file_exists(cmake);
-    if (source_checkout) {
-        cs_path_join(candidate, sizeof(candidate), rt->project_root, "training");
-        if (cs_mkdirs(candidate)) {
-            cs_strlcpy(rt->training, candidate, sizeof(rt->training));
-            return;
-        }
-    }
     cs_path_join(candidate, sizeof(candidate), rt->app_data, "training");
     cs_mkdirs(candidate);
     cs_strlcpy(rt->training, candidate, sizeof(rt->training));
+}
+
+static bool copy_one_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in) return false;
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return false;
+    }
+    char buf[65536];
+    bool ok = true;
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            ok = false;
+            break;
+        }
+    }
+    if (ferror(in)) ok = false;
+    fclose(in);
+    if (fclose(out) != 0) ok = false;
+    return ok;
+}
+
+/* Copy the bundled MiniMind source into CellScope's working directory once.
+ * Model downloads then land there too, so the app never writes into the bundle. */
+static bool copy_tree(const char *src, const char *dst)
+{
+#ifndef _WIN32
+    DIR *d = opendir(src);
+    if (!d) return false;
+    if (!cs_mkdirs(dst)) {
+        closedir(d);
+        return false;
+    }
+    bool ok = true;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0 ||
+            strcmp(e->d_name, ".git") == 0 || strcmp(e->d_name, "__pycache__") == 0)
+            continue;
+        char sp[CS_PATH_MAX], dp[CS_PATH_MAX];
+        cs_path_join(sp, sizeof(sp), src, e->d_name);
+        cs_path_join(dp, sizeof(dp), dst, e->d_name);
+        struct stat st;
+        if (stat(sp, &st) != 0) {
+            ok = false;
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (!copy_tree(sp, dp)) ok = false;
+        } else if (S_ISREG(st.st_mode)) {
+            if (!copy_one_file(sp, dp)) ok = false;
+        }
+    }
+    closedir(d);
+    return ok;
+#else
+    if (!cs_mkdirs(dst)) return false;
+    char pattern[CS_PATH_MAX];
+    cs_path_join(pattern, sizeof(pattern), src, "*");
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool ok = true;
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0 ||
+            strcmp(fd.cFileName, ".git") == 0 || strcmp(fd.cFileName, "__pycache__") == 0)
+            continue;
+        char sp[CS_PATH_MAX], dp[CS_PATH_MAX];
+        cs_path_join(sp, sizeof(sp), src, fd.cFileName);
+        cs_path_join(dp, sizeof(dp), dst, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!copy_tree(sp, dp)) ok = false;
+        } else if (!CopyFileA(sp, dp, FALSE)) {
+            ok = false;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return ok;
+#endif
 }
 
 static bool has_trainer(const char *dir)
@@ -126,6 +199,12 @@ bool runtime_init(PythonRuntime *rt, const char *project_root, char *err, size_t
     }
     const char *root = (project_root && *project_root) ? project_root : cs_project_root();
     cs_strlcpy(rt->project_root, root, sizeof(rt->project_root));
+    const char *rt_env = getenv("CELLSCOPE_RUNTIME_DIR");
+    if (rt_env && *rt_env)
+        cs_strlcpy(rt->dir, rt_env, sizeof(rt->dir));
+    else
+        cs_path_join(rt->dir, sizeof(rt->dir), rt->app_data, "runtime");
+    cs_mkdirs(rt->dir);
 
     char probe[CS_PATH_MAX];
     const char *env = getenv("CELLSCOPE_MINIMIND");
@@ -160,6 +239,26 @@ bool runtime_init(PythonRuntime *rt, const char *project_root, char *err, size_t
         }
     }
 
+    if (!has_trainer(rt->minimind)) {
+        snprintf(err, err_cap, "MiniMind-V source was not found");
+        return false;
+    }
+    char source_minimind[CS_PATH_MAX];
+    cs_strlcpy(source_minimind, rt->minimind, sizeof(source_minimind));
+    char vendored[CS_PATH_MAX];
+    cs_path_join(vendored, sizeof(vendored), rt->dir, "minimind");
+    if (!has_trainer(vendored)) {
+        if (!copy_tree(source_minimind, vendored)) {
+            snprintf(err, err_cap, "Could not copy MiniMind-V into %s", vendored);
+            return false;
+        }
+    }
+    if (!has_trainer(vendored)) {
+        snprintf(err, err_cap, "MiniMind-V copy is incomplete: %s", vendored);
+        return false;
+    }
+    cs_strlcpy(rt->minimind, vendored, sizeof(rt->minimind));
+
     cs_path_join(rt->scripts, sizeof(rt->scripts), root, "scripts");
     cs_path_join(probe, sizeof(probe), rt->scripts, "serve_minimind_vlm.py");
     if (!cs_file_exists(probe)) {
@@ -191,12 +290,6 @@ bool runtime_init(PythonRuntime *rt, const char *project_root, char *err, size_t
         snprintf(err, err_cap, "scripts/serve_minimind_vlm.py was not found");
         return false;
     }
-
-    const char *rt_env = getenv("CELLSCOPE_RUNTIME_DIR");
-    if (rt_env && *rt_env)
-        cs_strlcpy(rt->dir, rt_env, sizeof(rt->dir));
-    else
-        cs_path_join(rt->dir, sizeof(rt->dir), rt->app_data, "runtime");
 
     cs_path_join(rt->uv, sizeof(rt->uv), rt->dir,
 #ifdef _WIN32
@@ -275,6 +368,17 @@ static void set_rt_env(PythonRuntime *rt)
     char ms_cache[CS_PATH_MAX];
     cs_path_join(ms_cache, sizeof(ms_cache), rt->cache, "modelscope");
     setenv("MODELSCOPE_CACHE", ms_cache, 1);
+    char hf_cache[CS_PATH_MAX], torch_cache[CS_PATH_MAX];
+    cs_path_join(hf_cache, sizeof(hf_cache), rt->cache, "huggingface");
+    cs_path_join(torch_cache, sizeof(torch_cache), rt->cache, "torch");
+    cs_mkdirs(hf_cache);
+    cs_mkdirs(torch_cache);
+    setenv("HF_HOME", hf_cache, 1);
+    setenv("TORCH_HOME", torch_cache, 1);
+    setenv("PYTHONDONTWRITEBYTECODE", "1", 1);
+#ifdef __linux__
+    setenv("XDG_CACHE_HOME", rt->cache, 1);
+#endif
 }
 
 static int run_rt(PythonRuntime *rt, const char *cwd, const char *const argv[],
@@ -598,6 +702,7 @@ static bool install_packages(PythonRuntime *rt, RuntimeProgressFn cb, void *ctx)
     const char *packages_default[] = {
         "torch", "torchvision", "transformers==4.57.6", "datasets==3.6.0",
         "numpy==1.26.4", "pyarrow==23.0.0", "Pillow", "safetensors", "modelscope",
+        "huggingface_hub", "accelerate", "sentencepiece", "protobuf", "timm", "einops",
         NULL};
     const char *override = getenv("CELLSCOPE_RUNTIME_PACKAGES");
     char tmp[2048] = {0};

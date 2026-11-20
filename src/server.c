@@ -85,7 +85,8 @@ bool server_healthy(MiniMindServer *s)
     snprintf(url, sizeof(url), "%s/health", s->base_url);
     long status = 0;
     if (!http_get(url, body, sizeof(body), &status)) return false;
-    return status == 200 && strstr(body, "minimind-meter") != NULL;
+    const char *id = s->health_id[0] ? s->health_id : "minimind-meter";
+    return status == 200 && strstr(body, id) != NULL;
 }
 
 bool server_start(MiniMindServer *s, const char *python, const char *script,
@@ -97,6 +98,8 @@ bool server_start(MiniMindServer *s, const char *python, const char *script,
     snprintf(s->base_url, sizeof(s->base_url), "http://127.0.0.1:%d", port);
     cs_strlcpy(s->log_path, log_path, sizeof(s->log_path));
     cs_strlcpy(s->weight, weight, sizeof(s->weight));
+    cs_strlcpy(s->health_id, "minimind-meter", sizeof(s->health_id));
+    cs_strlcpy(s->kind, "minimind", sizeof(s->kind));
     if (err && err_cap) err[0] = '\0';
 
     if (server_healthy(s)) {
@@ -137,6 +140,57 @@ bool server_start(MiniMindServer *s, const char *python, const char *script,
     return true;
 }
 
+bool server_start_hf(MiniMindServer *s, const char *python, const char *script,
+                     const char *model_path, int port, const char *device,
+                     const char *log_path, char *err, size_t err_cap)
+{
+    memset(s, 0, sizeof(*s));
+    s->port = port;
+    snprintf(s->base_url, sizeof(s->base_url), "http://127.0.0.1:%d", port);
+    cs_strlcpy(s->log_path, log_path, sizeof(s->log_path));
+    cs_strlcpy(s->health_id, "cellscope-hf", sizeof(s->health_id));
+    cs_strlcpy(s->kind, "hf", sizeof(s->kind));
+    if (err && err_cap) err[0] = '\0';
+
+    if (server_healthy(s)) {
+        s->running = true;
+        s->external = true;
+        return true;
+    }
+    char config[CS_PATH_MAX];
+    cs_path_join(config, sizeof(config), model_path, "config.json");
+    if (!cs_file_exists(config)) {
+        snprintf(err, err_cap, "Hugging Face model directory is incomplete: %s", model_path);
+        return false;
+    }
+    char portbuf[16];
+    snprintf(portbuf, sizeof(portbuf), "%d", port);
+    const char *dev = (device && *device) ? device : "auto";
+    const char *argv[] = {python,
+                          script,
+                          "--model",
+                          model_path,
+                          "--port",
+                          portbuf,
+                          "--device",
+                          dev,
+                          "--host",
+                          "127.0.0.1",
+                          NULL};
+    FILE *f = fopen(log_path, "a");
+    if (f) {
+        fprintf(f, "\n=== starting Hugging Face reader server ===\n%s %s --model %s --port %d\n",
+                python, script, model_path, port);
+        fclose(f);
+    }
+    if (!proc_spawn(model_path, argv, log_path, &s->child, err, err_cap)) {
+        s->running = false;
+        return false;
+    }
+    s->running = true;
+    return true;
+}
+
 bool server_wait_ready(MiniMindServer *s, int timeout_ms, volatile int *cancel)
 {
     if (!s) return false;
@@ -151,7 +205,7 @@ bool server_wait_ready(MiniMindServer *s, int timeout_ms, volatile int *cancel)
             char tail[4000];
             read_log_tail(s->log_path, tail, sizeof(tail));
             snprintf(s->error, sizeof(s->error),
-                     "MiniMind server exited during startup.%s%s",
+                     "Reader server exited during startup.%s%s",
                      tail[0] ? "\n" : "", tail);
             s->running = false;
             return false;
@@ -161,7 +215,7 @@ bool server_wait_ready(MiniMindServer *s, int timeout_ms, volatile int *cancel)
     }
     char tail[4000];
     read_log_tail(s->log_path, tail, sizeof(tail));
-    snprintf(s->error, sizeof(s->error), "MiniMind server did not become ready.%s%s",
+    snprintf(s->error, sizeof(s->error), "Reader server did not become ready.%s%s",
              tail[0] ? "\n" : "", tail);
     return false;
 }

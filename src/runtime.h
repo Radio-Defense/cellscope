@@ -6,7 +6,7 @@
 
 #include "util.h"
 
-#define CELLSCOPE_RUNTIME_VERSION "1"
+#define CELLSCOPE_RUNTIME_VERSION "2"
 
 typedef enum {
     RT_STAGE_IDLE = 0,

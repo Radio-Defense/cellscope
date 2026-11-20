@@ -178,9 +178,16 @@ bool cs_exe_dir(char *out, size_t cap)
 bool cs_app_data_dir(char *out, size_t cap)
 {
     if (out && cap) out[0] = '\0';
+    const char *override = getenv("CELLSCOPE_HOME");
+    if (override && *override) {
+        cs_strlcpy(out, override, cap);
+        return true;
+    }
     const char *home = getenv("HOME");
 #ifdef _WIN32
     if (!home) home = getenv("USERPROFILE");
+    /* Per-user application data is the normal writable location on Windows.
+     * Do not use Program Files: it requires elevation and is not user data. */
     const char *base = getenv("LOCALAPPDATA");
     if (!base) base = getenv("APPDATA");
     if (base && *base) {
@@ -191,19 +198,10 @@ bool cs_app_data_dir(char *out, size_t cap)
         cs_path_join(out, cap, home, "AppData/Local/CellScope");
         return true;
     }
-#elif defined(__APPLE__)
-    if (home && *home) {
-        cs_path_join(out, cap, home, "Library/Application Support/CellScope");
-        return true;
-    }
 #else
-    const char *xdg = getenv("XDG_DATA_HOME");
-    if (xdg && *xdg) {
-        cs_path_join(out, cap, xdg, "CellScope");
-        return true;
-    }
+    /* macOS and Linux: one hidden working directory in the home folder. */
     if (home && *home) {
-        cs_path_join(out, cap, home, ".local/share/CellScope");
+        cs_path_join(out, cap, home, ".cellscope");
         return true;
     }
 #endif

@@ -15,6 +15,7 @@ typedef struct {
     int meter_count;
     bool modal_open;
     bool modal_checking;
+    bool paused;
     bool ever_connected;
     char device_label[128];
     int64_t last_poll_ok_ms;
@@ -45,7 +46,6 @@ static UiColor kind_color(VlmBackend kind)
     switch (kind) {
         case VLM_BACKEND_OLLAMA:
         case VLM_BACKEND_LLAMA: return UI_ACCENT;
-        case VLM_BACKEND_TESSERACT: return UI_AMBER;
         case VLM_BACKEND_MOCK: return UI_VIOLET;
         case VLM_BACKEND_OFF: return UI_FAINT;
         default: return UI_MUTED;
@@ -62,6 +62,7 @@ static void snapshot(App *app, UiState *s)
     s->meter_count = app->meter_count;
     s->modal_open = app->modal_open;
     s->modal_checking = app->modal_checking;
+    s->paused = app->paused;
     s->ever_connected = app->ever_connected;
     cs_strlcpy(s->device_label, app->device_label, sizeof(s->device_label));
     s->last_poll_ok_ms = app->last_poll_ok_ms;
@@ -75,7 +76,7 @@ static void layout(App *app, Layout *l)
     float pad = 18, gap = 14;
     l->header = ui_rect(0, 0, (float)w, 64);
     l->footer = ui_rect(0, (float)h - 28, (float)w, 28);
-    float y = 76 + app->ui_banner_h;
+    float y = 112 + app->ui_banner_h;
     float avail_h = (float)h - y - 28 - pad;
     float left_w = ((float)w - 2 * pad - gap) * 0.57f;
     float right_w = (float)w - 2 * pad - gap - left_w;
@@ -156,11 +157,40 @@ static const char *adb_short_state(const UiState *s, char *buf, size_t cap, UiCo
     return buf;
 }
 
+static void draw_transport(App *app, UiState *s)
+{
+    Ui *ui = &app->ui;
+    float cx = (float)ui->win_w / 2.0f;
+    ui_line(ui, 0, 107.5f, (float)ui->win_w, 107.5f, UI_BORDER_SOFT, 1);
+    UiRect btn = ui_rect(cx - 22, 64, 44, 44);
+    bool hover = ui_rect_contains(btn, ui->mx, ui->my);
+    UiColor ring = s->paused ? UI_AMBER : UI_ACCENT;
+    ui_circle(ui, btn.x + 22, btn.y + 22, 22, ring);
+    ui_circle(ui, btn.x + 22, btn.y + 22, 20.5f,
+              hover ? UI_COLOR(30, 44, 53, 255) : UI_COLOR(17, 27, 35, 255));
+    if (s->paused) {
+        ui_line(ui, cx - 4, btn.y + 14, cx + 6, btn.y + 22, UI_ACCENT, 2.4f);
+        ui_line(ui, cx + 6, btn.y + 22, cx - 4, btn.y + 30, UI_ACCENT, 2.4f);
+        ui_line(ui, cx - 4, btn.y + 30, cx - 4, btn.y + 14, UI_ACCENT, 2.4f);
+    } else {
+        ui_round_rect(ui, ui_rect(cx - 7, btn.y + 15, 5, 15), 1.5f, UI_TEXT);
+        ui_round_rect(ui, ui_rect(cx + 2, btn.y + 15, 5, 15), 1.5f, UI_TEXT);
+    }
+    ui_text_font(ui, FONT_SEMIBOLD, cx + 32, btn.y + 8, 9.2f, s->paused ? UI_AMBER : UI_ACCENT,
+                 s->paused ? "PAUSED" : "RUNNING");
+    ui_text_font(ui, FONT_MONO, cx + 32, btn.y + 23, 7.4f, UI_FAINT,
+                 "ADB + LOCAL CAMERA");
+    if (!ui->block_interactive && hover && ui->mouse_pressed) {
+        app_toggle_pause(app);
+        ui_consume_click(ui);
+    }
+}
+
 static void draw_runtime_banner(App *app, UiState *s)
 {
     if (app->ui_banner_h <= 0 || (!s->runtime.active && !s->runtime.error)) return;
     Ui *ui = &app->ui;
-    float y = 64, h = (float)app->ui_banner_h;
+    float y = 108, h = (float)app->ui_banner_h;
     UiColor accent = s->runtime.error ? UI_RED : UI_ACCENT;
     ui_rect_fill(ui, ui_rect(0, y, (float)ui->win_w, h), UI_COLOR(9, 14, 19, 248));
     ui_line(ui, 0, y + h - 0.5f, (float)ui->win_w, y + h - 0.5f, UI_BORDER_SOFT, 1);
@@ -211,10 +241,18 @@ static void draw_header(App *app, UiState *s)
 
     float pill_h = 26, gap = 8;
     float x = w - 18;
-    /* Export button */
-    UiRect export_r = ui_rect(x - 86, 18, 86, pill_h);
-    if (ui_button(ui, export_r, "Export CSV", BUTTON_SECONDARY, true)) app_export_csv(app);
-    x -= 86 + gap;
+    /* Export / Upload / Settings */
+    UiRect export_r = ui_rect(x - 78, 18, 78, pill_h);
+    if (ui_button(ui, export_r, "Export", BUTTON_SECONDARY, true)) app_export_json(app);
+    x -= 78 + gap;
+    UiRect upload_r = ui_rect(x - 70, 18, 70, pill_h);
+    if (ui_button(ui, upload_r, "Upload", BUTTON_SECONDARY, true))
+        app_notify(app, false, "Upload will be added in a later build.");
+    x -= 70 + gap;
+    UiRect settings_r = ui_rect(x - 78, 18, 78, pill_h);
+    if (ui_button(ui, settings_r, "Settings", BUTTON_SECONDARY, true))
+        app_notify(app, false, "Settings will be added in a later build.");
+    x -= 78 + gap;
 
     /* Reader pill */
     char reader_text[128];
@@ -237,7 +275,10 @@ static void draw_header(App *app, UiState *s)
     /* Camera pill */
     char cam_text[128];
     UiColor cam_col = UI_FAINT;
-    if (app->demo) {
+    if (s->paused) {
+        cs_strlcpy(cam_text, "PAUSED", sizeof(cam_text));
+        cam_col = UI_AMBER;
+    } else if (app->demo) {
         cs_strlcpy(cam_text, "DEMO FEED", sizeof(cam_text));
         cam_col = UI_VIOLET;
     } else if (app->image_mode) {
@@ -247,10 +288,10 @@ static void draw_header(App *app, UiState *s)
         cs_strlcpy(cam_text, "CAMERA PERMISSION", sizeof(cam_text));
         cam_col = UI_AMBER;
     } else if (app->camera_ok && app->cam.active) {
-        snprintf(cam_text, sizeof(cam_text), "CAM · %.22s", app->cam.name);
+        snprintf(cam_text, sizeof(cam_text), "LOCAL CAM · %.22s", app->cam.name);
         cam_col = UI_ACCENT;
     } else {
-        cs_strlcpy(cam_text, "NO CAMERA", sizeof(cam_text));
+        cs_strlcpy(cam_text, "NO LOCAL CAMERA", sizeof(cam_text));
     }
     float cw = ui_text_width(ui, FONT_MEDIUM, 10.2f, cam_text) + 28;
     UiRect cp = ui_rect(x - cw, 18, cw, pill_h);
@@ -471,6 +512,18 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
 
     if (!app->demo && (app->image_mode || (app->camera_ok && app->cam.active)))
         draw_guide(ui, p, s);
+
+    if (s->paused) {
+        ui_rect_fill(ui, p, UI_COLOR(4, 8, 11, 150));
+        float cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+        ui_circle(ui, cx, cy - 4, 28, UI_AMBER);
+        ui_line(ui, cx - 4, cy - 18, cx + 8, cy - 4, UI_COLOR(10, 18, 22, 255), 4.0f);
+        ui_line(ui, cx + 8, cy - 4, cx - 4, cy + 10, UI_COLOR(10, 18, 22, 255), 4.0f);
+        ui_line(ui, cx - 4, cy + 10, cx - 4, cy - 18, UI_COLOR(10, 18, 22, 255), 4.0f);
+        ui_text_center(ui, FONT_SEMIBOLD, cx, cy + 38, 12, UI_TEXT, "PAUSED");
+        ui_text_center(ui, FONT_MONO, cx, cy + 56, 8.2f, UI_FAINT,
+                       "Space or the top play button resumes");
+    }
 
     /* Reader status strip inside the preview. */
     if (!app->demo) {
@@ -831,12 +884,8 @@ static void draw_reader_panel(App *app, UiState *s, UiRect r)
                             s->reader.detail);
     }
     float btn_y = r.y + r.h - 34;
-    UiRect cap = ui_rect(r.x + 16, btn_y, 96, 26);
-    UiRect setup = ui_rect(r.x + 118, btn_y, 92, 26);
-    UiRect folder = ui_rect(r.x + 216, btn_y, 92, 26);
-    if (ui_button(ui, cap, "Capture now", BUTTON_PRIMARY, s->reader.kind != VLM_BACKEND_OFF)) {
-        app_request_capture(app);
-    }
+    UiRect setup = ui_rect(r.x + 16, btn_y, 92, 26);
+    UiRect folder = ui_rect(r.x + 116, btn_y, 92, 26);
     if (ui_button(ui, setup, "Copy setup", BUTTON_QUIET, true)) {
         SDL_SetClipboardText(
             "Ollama VLM:\n"
@@ -853,10 +902,23 @@ static void draw_reader_panel(App *app, UiState *s, UiRect r)
         app_notify(app, false, "Reader setup commands copied to the clipboard.");
     }
     if (ui_button(ui, folder, "Open folder", BUTTON_QUIET, true)) {
+        const char *dir = app->session_dir[0] ? app->session_dir : app->capture_dir;
         char url[CS_PATH_MAX + 16];
-        snprintf(url, sizeof(url), "file://%s", app->capture_dir);
-        if (!SDL_OpenURL(url)) app_notify(app, true, "Could not open %s", app->capture_dir);
+        snprintf(url, sizeof(url), "file://%s", dir);
+        if (!SDL_OpenURL(url)) app_notify(app, true, "Could not open %s", dir);
     }
+}
+
+static const char *ui_shot_name(const MeterSample *m)
+{
+    if (m->shot_name[0]) return m->shot_name;
+    if (!m->path[0]) return "";
+    const char *a = strrchr(m->path, '/');
+    const char *b = strrchr(m->path, '\\');
+    const char *p = NULL;
+    if (a && b) p = b > a ? b : a;
+    else p = a ? a : b;
+    return p ? p + 1 : m->path;
 }
 
 static void draw_meter_rows(App *app, UiState *s, UiRect body)
@@ -907,6 +969,11 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
 
         ui_text_font(ui, FONT_MONO, row.x + 10, row.y + 9, 10.4f,
                      newest ? UI_ACCENT : UI_FAINT, m.time_text);
+        const char *shot = ui_shot_name(&m);
+        float shot_w = CS_MIN(180.0f, row.w * 0.30f);
+        ui_text_ellipsis(ui, FONT_MONO, row.x + 110, row.y + 11, 8.2f,
+                         shot[0] ? UI_COLOR(150, 178, 198, 255) : UI_FAINT,
+                         shot_w, shot[0] ? shot : "—");
         char hz[64];
         cs_format_hz(m.hz, hz, sizeof(hz));
         ui_text_right(ui, FONT_MONO, row.x + row.w - 10, row.y + 6, 12.6f, UI_TEXT, hz);
@@ -917,8 +984,8 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
                  m.backend[0] ? m.backend : "reader");
         ui_text_right(ui, FONT_MONO, row.x + row.w - 10, row.y + 27, 8.8f, UI_FAINT, sub);
         if (m.path[0]) {
-            draw_dot(ui, row.x + 14, row.y + 36, UI_BLUE);
-            ui_text_font(ui, FONT_MONO, row.x + 22, row.y + 31, 8.0f, UI_BLUE, "PNG");
+            draw_dot(ui, row.x + 14, row.y + 37, UI_BLUE);
+            ui_text_font(ui, FONT_MONO, row.x + 22, row.y + 32, 7.8f, UI_BLUE, "SAVED");
         }
         if (ui_rect_contains(row, ui->mx, ui->my) && ui->mouse_pressed) {
             app->selected_meter_ts = m.ts_ms;
@@ -941,10 +1008,8 @@ static void draw_meter_panel(App *app, UiState *s, UiRect r)
     snprintf(count, sizeof(count), "%d", s->meter_count);
     draw_chip(ui, r.x + 16 + ui_text_width(ui, FONT_SEMIBOLD, 9.2f, "READINGS") + 10,
               r.y + 10, count, UI_MUTED, UI_COLOR(26, 37, 48, 255));
-    UiRect ex = ui_rect(r.x + r.w - 94, r.y + 8, 80, 24);
-    if (ui_button(ui, ex, "Export CSV", BUTTON_QUIET, s->meter_count > 0)) app_export_csv(app);
-
     ui_text_font(ui, FONT_MONO, r.x + 18, r.y + 40, 8.0f, UI_FAINT, "TIME");
+    ui_text_font(ui, FONT_MONO, r.x + 118, r.y + 40, 8.0f, UI_FAINT, "SCREENSHOT");
     ui_text_right(ui, FONT_MONO, r.x + r.w - 18, r.y + 40, 8.0f, UI_FAINT,
                   "FREQUENCY (Hz)");
     ui_line(ui, r.x + 12, r.y + 56.5f, r.x + r.w - 12, r.y + 56.5f, UI_BORDER_SOFT, 1);
@@ -960,20 +1025,25 @@ static void draw_footer(App *app, UiState *s)
     const char *con = s->adb.state == ADB_STATE_CONNECTED
                           ? (s->adb.serial[0] ? s->adb.serial : "connected")
                           : "disconnected";
-    snprintf(left, sizeof(left), "ADB · %s · %d samples", con, s->cell_count);
+    snprintf(left, sizeof(left), "ADB · %s%s · %d samples", con,
+             s->paused ? " · PAUSED" : "", s->cell_count);
     ui_text_font(ui, FONT_MONO, 18, h - 20, 8.4f, UI_FAINT, left);
     char center[CS_PATH_MAX + 32];
     if (app->selected_meter >= 0 && app->selected_meter_ts > 0) {
         MeterSample m = app_meter_at(app, app->selected_meter);
-        if (m.path[0]) snprintf(center, sizeof(center), "PNG · %s", m.path);
-        else snprintf(center, sizeof(center), "Captures · %s", app->capture_dir);
+        if (m.path[0]) snprintf(center, sizeof(center), "Reading screenshot · %s", m.path);
+        else if (app->session_dir[0])
+            snprintf(center, sizeof(center), "Dataset · %s", app->session_dir);
+        else snprintf(center, sizeof(center), "Working dir · %s", app->capture_dir);
+    } else if (app->session_dir[0]) {
+        snprintf(center, sizeof(center), "Dataset · %s", app->session_dir);
     } else {
-        snprintf(center, sizeof(center), "Captures · %s", app->capture_dir);
+        snprintf(center, sizeof(center), "Working dir · %s", app->capture_dir);
     }
     ui_text_ellipsis(ui, FONT_MONO, 330, h - 20, 8.4f, UI_FAINT, (float)ui->win_w - 700,
                      center);
     ui_text_right(ui, FONT_MONO, (float)ui->win_w - 18, h - 20, 8.4f, UI_FAINT,
-                  "R reconnect · C camera · E export · F capture");
+                  "Space pause · R reconnect · C camera · E export");
 }
 
 static void draw_toast(App *app)
@@ -1137,6 +1207,7 @@ void app_draw(App *app)
     ui_background(ui);
     ui->block_interactive = s.modal_open;
     draw_header(app, &s);
+    draw_transport(app, &s);
     draw_runtime_banner(app, &s);
     draw_camera_panel(app, &s, l.camera);
     draw_cell_panel(app, &s, l.cells);
