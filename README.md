@@ -678,14 +678,15 @@ Source map:
 ```bash
 ctest --test-dir build --output-on-failure
 
-For UI changes, render the major states and inspect them:
+For UI changes, build the Debug app, render the major states, and inspect them:
 
 ```bash
 ./scripts/ui_regression.sh
 # PNGs are written to /tmp/cellscope-ui-regression
 ```
 
-It covers main, live reading, consensus result, Settings, Upload, model chooser,
+The script configures and builds `build/` as Debug, runs `ctest`, covers main,
+live reading, consensus result, Settings, Upload, model chooser,
 remove-confirmation, and paused states, and refreshes
 `docs/screenshot-main.png` after the run.
 ```

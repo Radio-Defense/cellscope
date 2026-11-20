@@ -8,9 +8,13 @@ APP="$BUILD/cellscope.app/Contents/MacOS/cellscope"
 IMAGE=${1:-"$ROOT/docs/example.png"}
 OUT=${OUT:-/tmp/cellscope-ui-regression}
 
+echo "Building Debug app in $BUILD"
+cmake -S "$ROOT" -B "$BUILD" -DCMAKE_BUILD_TYPE=Debug
+cmake --build "$BUILD" --parallel
+ctest --test-dir "$BUILD" --output-on-failure
+
 if [ ! -x "$APP" ]; then
-    echo "Missing app binary: $APP" >&2
-    echo "Build first: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j4" >&2
+    echo "Missing app binary after build: $APP" >&2
     exit 1
 fi
 if [ ! -f "$IMAGE" ]; then
