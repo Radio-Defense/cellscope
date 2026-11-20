@@ -82,6 +82,26 @@ and **Relaunch app** as fallbacks. If you previously denied access, enable
 **CellScope** in *System Settings → Privacy & Security → Camera*, then click
 Retry.
 
+#### macOS Edge Light
+
+On macOS Tahoe 26.2+ with Apple silicon, macOS may show a glowing white ring
+around the edges of the entire display while any app has the camera open. This
+is the system **Edge Light** video effect (Photo Booth shows it too), not a
+CellScope overlay. The app cannot disable it: AVFoundation exposes the
+`isEdgeLightEnabled` state as read-only.
+
+To turn it off while CellScope is running:
+
+1. Click the green **video/camera icon** in the menu bar, or open **Control
+   Center → Video Effects**.
+2. Turn off **Edge Light**.
+3. Click the chevron next to **Edge Light** and turn off **Automatic** so macOS
+   does not re-enable it in low light.
+
+If you do not want the camera activated at all, use `--image PATH` instead.
+See [Apple's Edge Light guide](https://support.apple.com/125934) and the
+[AVCaptureDevice.isEdgeLightEnabled documentation](https://developer.apple.com/documentation/avfoundation/avcapturedevice/isedgelightenabled).
+
 Command-line options are handed to the relaunched instance through a
 short-lived temp file, so `--vlm`, `--capture-dir`, etc. survive the handoff.
 Set `CELLSCOPE_NO_AUTO_RELAUNCH=1` when debugging in Xcode/LLDB. The handoff
