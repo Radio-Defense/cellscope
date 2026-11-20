@@ -155,8 +155,6 @@ static void draw_transport(App *app, UiState *s)
     }
     ui_text_font(ui, FONT_SEMIBOLD, cx + 32, btn.y + 8, 9.2f, s->paused ? UI_AMBER : UI_ACCENT,
                  s->paused ? "PAUSED" : "RUNNING");
-    ui_text_font(ui, FONT_MONO, cx + 32, btn.y + 23, 7.4f, UI_FAINT,
-                 "ADB + LOCAL CAMERA");
     if (!ui->block_interactive && hover && ui->mouse_pressed) {
         app_toggle_pause(app);
         ui_consume_click(ui);
@@ -331,10 +329,9 @@ static void draw_guide(Ui *ui, UiRect preview, const UiState *s)
     ui_line(ui, g.x, g.y + g.h, g.x, g.y + g.h - len, col, th);
     ui_line(ui, g.x + g.w, g.y + g.h, g.x + g.w - len, g.y + g.h, col, th);
     ui_line(ui, g.x + g.w, g.y + g.h, g.x + g.w, g.y + g.h - len, col, th);
-    if (!s->paused)
-        ui_text_center(ui, FONT_SEMIBOLD, g.x + g.w / 2, g.y + g.h + 8, 8.5f,
-                       UI_COLOR(180, 220, 205, 175),
-                       "HOLD THE METER SCREEN IN THE GUIDE · MOVE CLOSER IF SMALL");
+    ui_text_center(ui, FONT_SEMIBOLD, g.x + g.w / 2, g.y + g.h + 8, 8.5f,
+                   UI_COLOR(180, 220, 205, 175),
+                   "HOLD THE METER SCREEN IN THE GUIDE · MOVE CLOSER IF SMALL");
 }
 
 static void draw_demo_feed(App *app, UiRect preview)
