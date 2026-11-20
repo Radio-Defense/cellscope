@@ -8,6 +8,8 @@ goal is a large, independently contributed dataset that can test and extend the
 study's conclusions without depending on a single observer, handset, counter,
 operator or country.
 
+![CellScope with simulated connected phone data and GLM-OCR meter reading](docs/screenshot-main.png)
+
 ### What the study establishes
 
 The report analyses 1,162 readings across eight replication datasets collected
@@ -134,7 +136,6 @@ chat template and `Text Recognition:` prompt. No
 telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
 releases, ModelScope, and Hugging Face if you download an HF model.
 
-![CellScope with simulated connected phone data and GLM-OCR meter reading](docs/screenshot-main.png)
 
 ## Stack
 
