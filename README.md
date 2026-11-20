@@ -467,8 +467,10 @@ such as `cellscope_<timestamp>.json`. The file contains both the `readings` and
 `cell_samples` arrays. Capture data defaults under `~/.cellscope/datasets/` (or
 `<--capture-dir>/datasets/`).
 
-The top bar also has **Upload** and **Settings** buttons; they are visible
-placeholders for later work.
+The top bar also has **Upload** and **Settings** buttons. **Settings** opens an
+editor for every field in the working-directory `settings.json`; changes are
+saved atomically and apply after restart. **Upload** explains that online
+storage is not implemented yet.
 
 ## Training a meter reader with MiniMind-V
 

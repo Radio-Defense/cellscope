@@ -6,6 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define getcwd _getcwd
+#else
+#include <unistd.h>
+#endif
+
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "wifi.h"
@@ -324,6 +331,112 @@ void app_add_meter(App *app, const MeterSample *sample)
 {
     SDL_LockMutex(app->mu);
     meter_push_locked(app, sample);
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_open_settings_modal(App *app)
+{
+    char cwd[CS_PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) cs_strlcpy(cwd, ".", sizeof(cwd));
+    SDL_LockMutex(app->mu);
+    AppSettings *s = &app->settings;
+    snprintf(app->settings_edit[0], CS_PATH_MAX, "%d", s->version);
+    cs_strlcpy(app->settings_edit[1], s->reader_backend, CS_PATH_MAX);
+    cs_strlcpy(app->settings_edit[2], s->hf_model, CS_PATH_MAX);
+    cs_strlcpy(app->settings_edit[3], s->hf_model_path, CS_PATH_MAX);
+    snprintf(app->settings_edit[4], CS_PATH_MAX, "%d", s->hf_port);
+    cs_strlcpy(app->settings_edit[5], s->hf_device, CS_PATH_MAX);
+    snprintf(app->settings_edit[6], CS_PATH_MAX, "%d", s->camera_index);
+    cs_path_join(app->settings_target, sizeof(app->settings_target), cwd, "settings.json");
+    app->settings_focus = 0;
+    app->settings_error[0] = '\0';
+    app->settings_modal_open = true;
+    app->upload_modal_open = false;
+    SDL_UnlockMutex(app->mu);
+    SDL_StartTextInput(app->win);
+}
+
+void app_close_settings_modal(App *app)
+{
+    SDL_LockMutex(app->mu);
+    app->settings_modal_open = false;
+    app->settings_error[0] = '\0';
+    SDL_UnlockMutex(app->mu);
+    SDL_StopTextInput(app->win);
+}
+
+void app_save_settings_modal(App *app)
+{
+    AppSettings tmp;
+    char err[512] = {0};
+    SDL_LockMutex(app->mu);
+    tmp = app->settings;
+    cs_strlcpy(tmp.path, app->settings_target, sizeof(tmp.path));
+    char *end = NULL;
+    long version = strtol(app->settings_edit[0], &end, 10);
+    if (!end || end == app->settings_edit[0] || version < 0 || version > 1000000) {
+        cs_strlcpy(app->settings_error, "Version must be a non-negative integer.",
+                   sizeof(app->settings_error));
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    tmp.version = (int)version;
+    cs_strlcpy(tmp.reader_backend, app->settings_edit[1], sizeof(tmp.reader_backend));
+    cs_strlcpy(tmp.hf_model, app->settings_edit[2], sizeof(tmp.hf_model));
+    cs_strlcpy(tmp.hf_model_path, app->settings_edit[3], sizeof(tmp.hf_model_path));
+    cs_strlcpy(tmp.hf_device, app->settings_edit[5], sizeof(tmp.hf_device));
+    end = NULL;
+    long port = strtol(app->settings_edit[4], &end, 10);
+    if (!end || end == app->settings_edit[4] || port < 1024 || port > 65535) {
+        cs_strlcpy(app->settings_error, "HF port must be between 1024 and 65535.",
+                   sizeof(app->settings_error));
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    tmp.hf_port = (int)port;
+    end = NULL;
+    long camera = strtol(app->settings_edit[6], &end, 10);
+    if (!end || end == app->settings_edit[6] || camera < 0 || camera > 16) {
+        cs_strlcpy(app->settings_error, "Camera index must be between 0 and 16.",
+                   sizeof(app->settings_error));
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    tmp.camera_index = (int)camera;
+    if (strcmp(tmp.reader_backend, "minimind") != 0 &&
+        strcmp(tmp.reader_backend, "hf") != 0) {
+        cs_strlcpy(app->settings_error, "Reader backend must be \"minimind\" or \"hf\".",
+                   sizeof(app->settings_error));
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    bool ok = settings_save(&tmp, err, sizeof(err));
+    if (!ok) {
+        snprintf(app->settings_error, sizeof(app->settings_error), "%s", err);
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+    app->settings = tmp;
+    app->settings_modal_open = false;
+    app->settings_error[0] = '\0';
+    SDL_UnlockMutex(app->mu);
+    SDL_StopTextInput(app->win);
+    app_notify(app, false, "Settings saved to %s. Restart CellScope to apply.",
+               app->settings_target);
+}
+
+void app_open_upload_modal(App *app)
+{
+    SDL_LockMutex(app->mu);
+    app->upload_modal_open = true;
+    app->settings_modal_open = false;
+    SDL_UnlockMutex(app->mu);
+}
+
+void app_close_upload_modal(App *app)
+{
+    SDL_LockMutex(app->mu);
+    app->upload_modal_open = false;
     SDL_UnlockMutex(app->mu);
 }
 
@@ -669,6 +782,8 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->readme_fixture_mode = strcmp(mode, "live") == 0 ? 2
                                      : strcmp(mode, "best") == 0 ? 3
                                      : strcmp(mode, "remove") == 0 ? 5
+                                     : strcmp(mode, "settings") == 0 ? 6
+                                     : strcmp(mode, "upload") == 0 ? 7
                                                                  : 1;
         } else if (strcmp(a, "--autoplay") == 0) {
             app->autoplay = true;
@@ -1162,6 +1277,8 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     }
 
     if (app->auto_connect && !app->demo && !app->readme_fixture) app->want_check = true;
+    if (app->readme_fixture_mode == 6) app_open_settings_modal(app);
+    else if (app->readme_fixture_mode == 7) app_open_upload_modal(app);
 
     if (!app->readme_fixture) {
         app->adb_thread = SDL_CreateThread(cellscope_adb_thread, "adb-poller", app);
@@ -2613,9 +2730,63 @@ void app_save_window_png(App *app, const char *path)
     SDL_DestroySurface(surf);
 }
 
+static void settings_field_append(App *app, const char *text)
+{
+    if (!text || !*text) return;
+    char *dst = app->settings_edit[app->settings_focus];
+    size_t n = strlen(dst);
+    size_t add = strlen(text);
+    if (n + add >= CS_PATH_MAX) add = CS_PATH_MAX - 1 - n;
+    if (add) memcpy(dst + n, text, add);
+    dst[n + add] = '\0';
+}
+
+static void settings_field_backspace(App *app)
+{
+    char *dst = app->settings_edit[app->settings_focus];
+    size_t n = strlen(dst);
+    if (!n) return;
+    n--;
+    while (n > 0 && ((unsigned char)dst[n] & 0xC0) == 0x80) n--;
+    dst[n] = '\0';
+}
+
 void app_handle_event(App *app, const SDL_Event *e)
 {
     if (!e) return;
+    if (app->settings_modal_open) {
+        if (e->type == SDL_EVENT_TEXT_INPUT) {
+            settings_field_append(app, e->text.text);
+            return;
+        }
+        if (e->type == SDL_EVENT_KEY_DOWN) {
+            switch (e->key.key) {
+                case SDLK_ESCAPE:
+                    app_close_settings_modal(app);
+                    return;
+                case SDLK_RETURN:
+                    app_save_settings_modal(app);
+                    return;
+                case SDLK_TAB:
+                    if (e->key.mod & SDL_KMOD_SHIFT)
+                        app->settings_focus = (app->settings_focus + 6) % 7;
+                    else
+                        app->settings_focus = (app->settings_focus + 1) % 7;
+                    return;
+                case SDLK_BACKSPACE:
+                    settings_field_backspace(app);
+                    return;
+                default:
+                    return;
+            }
+        }
+    } else if (app->upload_modal_open) {
+        if (e->type == SDL_EVENT_KEY_DOWN) {
+            if (e->key.key == SDLK_ESCAPE || e->key.key == SDLK_RETURN)
+                app_close_upload_modal(app);
+            return;
+        }
+    }
     /* Ignore stray mouse events as the window is mapped. */
     if ((e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP) &&
         cs_now_ms() - app->started_ms < 350) {

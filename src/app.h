@@ -204,6 +204,12 @@ typedef struct App {
     bool modal_checking;
     bool remove_meter_open;
     int remove_meter_index;
+    bool settings_modal_open;
+    bool upload_modal_open;
+    int settings_focus;
+    char settings_edit[7][CS_PATH_MAX];
+    char settings_target[CS_PATH_MAX];
+    char settings_error[256];
     bool want_check;
     bool background_retry;
     int64_t last_check_ms;
@@ -297,5 +303,10 @@ void app_add_meter(App *app, const MeterSample *sample);
 void app_request_remove_meter(App *app, int index);
 void app_confirm_remove_meter(App *app);
 void app_cancel_remove_meter(App *app);
+void app_open_settings_modal(App *app);
+void app_close_settings_modal(App *app);
+void app_save_settings_modal(App *app);
+void app_open_upload_modal(App *app);
+void app_close_upload_modal(App *app);
 
 #endif

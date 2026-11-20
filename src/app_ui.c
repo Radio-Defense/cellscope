@@ -18,6 +18,8 @@ typedef struct {
     bool modal_checking;
     bool remove_meter_open;
     int remove_meter_index;
+    bool settings_modal_open;
+    bool upload_modal_open;
     bool paused;
     bool ever_connected;
     char device_label[128];
@@ -57,6 +59,8 @@ static void snapshot(App *app, UiState *s)
     s->modal_checking = app->modal_checking;
     s->remove_meter_open = app->remove_meter_open;
     s->remove_meter_index = app->remove_meter_index;
+    s->settings_modal_open = app->settings_modal_open;
+    s->upload_modal_open = app->upload_modal_open;
     s->paused = app->paused;
     s->ever_connected = app->ever_connected;
     cs_strlcpy(s->device_label, app->device_label, sizeof(s->device_label));
@@ -249,11 +253,11 @@ static void draw_header(App *app, UiState *s)
     x -= 78 + gap;
     UiRect upload_r = ui_rect(x - 70, 18, 70, pill_h);
     if (ui_button(ui, upload_r, "Upload", BUTTON_SECONDARY, true))
-        app_notify(app, false, "Upload will be added in a later build.");
+        app_open_upload_modal(app);
     x -= 70 + gap;
     UiRect settings_r = ui_rect(x - 78, 18, 78, pill_h);
     if (ui_button(ui, settings_r, "Settings", BUTTON_SECONDARY, true))
-        app_notify(app, false, "Settings will be added in a later build.");
+        app_open_settings_modal(app);
     x -= 78 + gap;
 
     /* Reader pill */
@@ -1225,6 +1229,82 @@ static void draw_remove_modal(App *app, UiState *s)
         app_confirm_remove_meter(app);
 }
 
+static void draw_settings_modal(App *app, UiState *s)
+{
+    (void)s;
+    Ui *ui = &app->ui;
+    float W = (float)ui->win_w, H = (float)ui->win_h;
+    ui_rect_fill(ui, ui_rect(0, 0, W, H), UI_COLOR(3, 5, 8, 205));
+    float cw = CS_MIN(740.0f, W - 50), ch = CS_MIN(620.0f, H - 50);
+    UiRect card = ui_rect((W - cw) / 2, (H - ch) / 2, cw, ch);
+    ui_round_rect(ui, ui_rect(card.x - 2, card.y - 2, card.w + 4, card.h + 4), 16,
+                  UI_COLOR(35, 55, 48, 150));
+    ui_panel(ui, card, UI_PANEL);
+    ui_round_rect(ui, ui_rect(card.x + 1, card.y + 1, card.w - 2, 3), 2, UI_ACCENT);
+    ui_text_font(ui, FONT_SEMIBOLD, card.x + 26, card.y + 22, 20.0f, UI_TEXT,
+                 "Settings");
+    ui_text_font(ui, FONT_UI, card.x + 26, card.y + 50, 9.6f, UI_MUTED,
+                 "All fields from settings.json. Changes apply after restart.");
+    ui_text_ellipsis(ui, FONT_MONO, card.x + 26, card.y + 66, 7.8f, UI_FAINT,
+                     card.w - 52, app->settings_target);
+
+    static const char *labels[7] = {
+        "version", "reader_backend", "hf_model", "hf_model_path",
+        "hf_port", "hf_device", "camera_index",
+    };
+    float y = card.y + 92;
+    for (int i = 0; i < 7; i++) {
+        UiRect input = ui_rect(card.x + 170, y, card.w - 196, 30);
+        bool focus = (app->settings_focus == i);
+        ui_text_font(ui, FONT_MONO, card.x + 26, y + 8, 8.4f, UI_FAINT, labels[i]);
+        ui_round_rect(ui, input, 6, UI_COLOR(8, 14, 19, 255));
+        ui_rect_outline(ui, input, focus ? UI_ACCENT : UI_BORDER_SOFT, focus ? 1.5f : 1);
+        ui_text_ellipsis(ui, FONT_MONO, input.x + 9, input.y + 8, 9.0f,
+                         focus ? UI_TEXT : UI_MUTED, input.w - 18,
+                         app->settings_edit[i]);
+        if (ui_rect_contains(input, ui->mx, ui->my) && ui->mouse_pressed) {
+            app->settings_focus = i;
+            ui_consume_click(ui);
+        }
+        y += 42;
+    }
+
+    if (app->settings_error[0])
+        ui_text_ellipsis(ui, FONT_MONO, card.x + 26, y + 4, 8.0f, UI_RED,
+                         card.w - 52, app->settings_error);
+
+    float by = card.y + card.h - 52;
+    UiRect cancel = ui_rect(card.x + card.w - 250, by, 110, 34);
+    UiRect save = ui_rect(card.x + card.w - 126, by, 100, 34);
+    if (ui_button(ui, cancel, "Cancel", BUTTON_SECONDARY, true))
+        app_close_settings_modal(app);
+    if (ui_button(ui, save, "Save", BUTTON_PRIMARY, true))
+        app_save_settings_modal(app);
+}
+
+static void draw_upload_modal(App *app, UiState *s)
+{
+    (void)s;
+    Ui *ui = &app->ui;
+    float W = (float)ui->win_w, H = (float)ui->win_h;
+    ui_rect_fill(ui, ui_rect(0, 0, W, H), UI_COLOR(3, 5, 8, 200));
+    float cw = CS_MIN(600.0f, W - 60), ch = 228;
+    UiRect card = ui_rect((W - cw) / 2, (H - ch) / 2, cw, ch);
+    ui_round_rect(ui, ui_rect(card.x - 2, card.y - 2, card.w + 4, card.h + 4), 14,
+                  UI_COLOR(35, 55, 48, 150));
+    ui_panel(ui, card, UI_PANEL);
+    ui_round_rect(ui, ui_rect(card.x + 1, card.y + 1, card.w - 2, 3), 2, UI_BLUE);
+    ui_text_font(ui, FONT_SEMIBOLD, card.x + 26, card.y + 22, 19.0f, UI_TEXT,
+                 "Upload");
+    ui_text_wrapped_max(ui, card.x + 26, card.y + 56, card.w - 52, 10.2f, UI_MUTED,
+                        1.55f, 5,
+                        "Uploading is not implemented yet. Once we figure out a "
+                        "solid online storage mechanism that can't easily be taken "
+                        "down, this will immortalize your captured data for analysis.");
+    UiRect ok = ui_rect(card.x + card.w - 116, card.y + card.h - 50, 90, 32);
+    if (ui_button(ui, ok, "OK", BUTTON_PRIMARY, true)) app_close_upload_modal(app);
+}
+
 void app_draw(App *app)
 {
     Ui *ui = &app->ui;
@@ -1234,7 +1314,8 @@ void app_draw(App *app)
     layout(app, &l);
 
     ui_background(ui);
-    ui->block_interactive = s.modal_open || s.remove_meter_open;
+    ui->block_interactive = s.modal_open || s.remove_meter_open ||
+                            s.settings_modal_open || s.upload_modal_open;
     draw_header(app, &s);
     draw_transport(app, &s);
     draw_runtime_banner(app, &s);
@@ -1245,5 +1326,7 @@ void app_draw(App *app)
     ui->block_interactive = false;
     if (s.modal_open) draw_modal(app, &s);
     if (s.remove_meter_open) draw_remove_modal(app, &s);
+    if (s.settings_modal_open) draw_settings_modal(app, &s);
+    if (s.upload_modal_open) draw_upload_modal(app, &s);
     draw_toast(app);
 }

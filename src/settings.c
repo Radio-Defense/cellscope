@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define getcwd _getcwd
+#else
+#include <unistd.h>
+#endif
+
 void settings_defaults(AppSettings *s)
 {
     memset(s, 0, sizeof(*s));
@@ -25,6 +32,11 @@ bool settings_init(AppSettings *s, char *err, size_t err_cap)
     const char *override = getenv("CELLSCOPE_SETTINGS");
     if (override && *override) {
         cs_strlcpy(s->path, override, sizeof(s->path));
+        return true;
+    }
+    char cwd[CS_PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd))) {
+        cs_path_join(s->path, sizeof(s->path), cwd, "settings.json");
         return true;
     }
     char dir[CS_PATH_MAX];
