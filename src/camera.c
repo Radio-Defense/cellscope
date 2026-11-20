@@ -87,7 +87,7 @@ bool camera_switch(Camera *cam)
 static void capture_rgb(Camera *cam, SDL_Surface *frame)
 {
     if (!frame) return;
-    int max_w = 960;
+    int max_w = 1024;
     int w = frame->w, h = frame->h;
     if (w > max_w) {
         h = (int)((float)h * max_w / w);

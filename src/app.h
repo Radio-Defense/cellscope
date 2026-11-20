@@ -149,6 +149,7 @@ typedef struct App {
 
     int64_t started_ms;
     int64_t last_snapshot_ms;
+    int64_t last_camera_rgb_ms;
     int64_t last_demo_cell_ms;
     int64_t last_demo_meter_ms;
     int64_t last_probe_ms;

@@ -86,7 +86,7 @@ FrameQuality frame_quality(const uint8_t *rgb, int w, int h)
     if (brightness < 0) brightness = 0;
     q.score = 0.56f * q.sharpness + 0.22f * q.contrast + 0.13f * q.edges +
               0.09f * brightness;
-    q.score -= 3.5f * q.glare + 1.5f * q.dark;
+    q.score -= 3.5f * q.glare + 0.5f * q.dark;
     if (edge_frac < 0.008) q.score -= 0.18f;
     if (grad_mean < 4.0) q.score -= 0.12f;
     q.score = clamp01(q.score);

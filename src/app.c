@@ -385,7 +385,7 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
         }
         return APP_ARGS_OK;
     }
-    if (app->demo) {
+    if (app->demo || app->demo_phone) {
         if (app->demo_phone && app->image_mode) app->image_mode = false;
         app->no_modal = true;
     }
@@ -625,9 +625,11 @@ void app_update(App *app)
         }
     } else if (!app->demo && app->camera_ok) {
         camera_update(&app->cam);
-        if (app->cam.rgb && now - app->last_snapshot_ms >= 100) {
+        if (app->cam.rgb && app->cam.rgb_ms != app->last_camera_rgb_ms &&
+            now - app->last_snapshot_ms >= 40) {
             publish_frame(app, app->cam.rgb, app->cam.rgb_w, app->cam.rgb_h,
                           app->cam.rgb_ms);
+            app->last_camera_rgb_ms = app->cam.rgb_ms;
             app->last_snapshot_ms = now;
         }
     }
