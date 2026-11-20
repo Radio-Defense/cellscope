@@ -10,6 +10,8 @@
 /* Ask the platform for camera permission before SDL opens the device. */
 int camera_platform_prepare(void);
 void camera_platform_request_access(void);
+bool camera_platform_auto_relaunch_if_needed(void);
+bool camera_platform_take_relaunch_args(int *argc, char ***argv);
 bool camera_platform_can_open_settings(void);
 bool camera_platform_open_settings(void);
 bool camera_platform_can_relaunch(void);

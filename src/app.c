@@ -450,6 +450,9 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->no_modal = true;
         } else if (strcmp(a, "--no-camera") == 0) {
             app->no_camera = true;
+        } else if (strcmp(a, "--relaunched") == 0) {
+            /* Internal guard used by the macOS LaunchServices re-exec. */
+            app->relaunched = true;
         } else if (strcmp(a, "--setup-runtime") == 0) {
             app->setup_runtime_mode = true;
         } else if (strcmp(a, "--no-runtime") == 0) {

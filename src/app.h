@@ -111,6 +111,7 @@ typedef struct App {
     bool no_modal;
     bool image_mode;
     bool no_camera;
+    bool relaunched;
     bool auto_connect;
     bool vlm_explicit;
     char vlm_mode[24];

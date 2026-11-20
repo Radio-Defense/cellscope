@@ -61,14 +61,21 @@ between rebuilds; for repeatable camera permission, configure a stable Apple
 Development/Developer ID identity:
 `-DCELLSCOPE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"`.
 
-On first launch CellScope requests camera access from the main loop so macOS can
-present its normal system dialog. The camera panel also shows **Retry camera**,
-**Camera settings**, and (when appropriate) **Relaunch app**. If you previously
-denied access, enable **CellScope** in
-*System Settings → Privacy & Security → Camera*, then click Retry. Launching the
-bundle with `open` is important on macOS; running the raw executable from a
-terminal can make TCC attribute camera permission to the terminal instead, in
-which case use **Relaunch app**.
+On macOS, when camera permission is still undecided, launching CellScope
+automatically reopens it through LaunchServices *before the first window
+is shown*. The TCC dialog therefore belongs to CellScope, not to the terminal,
+IDE, or agent that started it. This is the same path as the **Relaunch app**
+button and happens without user interaction; the first process exits after
+handing off. The camera panel still shows **Retry camera**, **Camera settings**,
+and **Relaunch app** as fallbacks. If you previously denied access, enable
+**CellScope** in *System Settings → Privacy & Security → Camera*, then click
+Retry.
+
+Command-line options are handed to the relaunched instance through a
+short-lived temp file, so `--vlm`, `--capture-dir`, etc. survive the handoff.
+Set `CELLSCOPE_NO_AUTO_RELAUNCH=1` when debugging in Xcode/LLDB. The handoff
+also covers a raw executable started from a terminal; launching the bundle with
+`open` remains recommended.
 
 ![Camera permission panel](docs/screenshot-camera-permission.png)
 

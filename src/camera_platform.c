@@ -11,6 +11,18 @@ void camera_platform_request_access(void)
 {
 }
 
+bool camera_platform_auto_relaunch_if_needed(void)
+{
+    return false;
+}
+
+bool camera_platform_take_relaunch_args(int *argc, char ***argv)
+{
+    (void)argc;
+    (void)argv;
+    return false;
+}
+
 bool camera_platform_can_open_settings(void)
 {
 #ifdef _WIN32

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "camera_platform.h"
 #include "runtime.h"
 #include "hfmodel.h"
 #include "train.h"
@@ -32,6 +33,8 @@ int main(int argc, char **argv)
         return 1;
     }
     char err[1024] = {0};
+    /* A macOS LaunchServices relaunch drops argv; recover it before parsing. */
+    camera_platform_take_relaunch_args(&argc, &argv);
     AppArgsResult ar = app_parse_args(app, argc, argv, err, sizeof(err));
     if (ar == APP_ARGS_HELP) {
         app_print_usage();
@@ -84,6 +87,20 @@ int main(int argc, char **argv)
         free(app);
         curl_global_cleanup();
         return rc;
+    }
+
+    /* macOS TCC attributes a camera prompt to the responsible application.
+     * A binary launched from a terminal, IDE, or another agent can silently
+     * lose that prompt. Before the first decision, re-open ourselves through
+     * LaunchServices so the prompt belongs to CellScope. The --relaunched
+     * argument and environment guard prevent a loop. */
+    if (!app->no_camera && !app->demo && !app->image_mode && !app->relaunched) {
+        if (camera_platform_auto_relaunch_if_needed()) {
+            fprintf(stderr, "CellScope: reopening through LaunchServices for camera permission\n");
+            free(app);
+            curl_global_cleanup();
+            return 0;
+        }
     }
 
     SDL_SetAppMetadata("CellScope", CELLSCOPE_VERSION, "com.cellscope.app");
