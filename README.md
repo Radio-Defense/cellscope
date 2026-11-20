@@ -677,6 +677,16 @@ Source map:
 
 ```bash
 ctest --test-dir build --output-on-failure
+
+For UI changes, render the major states and inspect them:
+
+```bash
+./scripts/ui_regression.sh
+# PNGs are written to /tmp/cellscope-ui-regression
+```
+
+It covers main, live reading, consensus result, Settings, Upload, model chooser,
+remove-confirmation, and paused states.
 ```
 
 The test suite covers PLMN splitting, LTE/NR ARFCN conversions, a realistic
