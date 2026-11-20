@@ -158,6 +158,160 @@ bool proc_run_stream(const char *cwd, const char *const argv[], int *exit_code)
     return true;
 }
 
+
+bool proc_run_cancellable(const char *cwd, const char *const argv[], char *out,
+                          size_t out_cap, int timeout_ms, volatile int *cancel,
+                          int *exit_code, bool *timed_out, char *err, size_t err_cap)
+{
+    if (out && out_cap) out[0] = '\0';
+    if (err && err_cap) err[0] = '\0';
+    if (exit_code) *exit_code = -1;
+    if (timed_out) *timed_out = false;
+    if (!argv || !argv[0]) return false;
+
+    char cmdline[8192] = {0};
+    for (int i = 0; argv[i]; i++) {
+        if (i) cs_strlcat(cmdline, " ", sizeof(cmdline));
+        append_quoted(cmdline, sizeof(cmdline), argv[i]);
+    }
+    SECURITY_ATTRIBUTES sa = {0};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE rd = NULL, wr = NULL;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return false;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si = {0};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi = {0};
+    BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL,
+                             cwd && *cwd ? cwd : NULL, &si, &pi);
+    CloseHandle(wr);
+    if (!ok) {
+        CloseHandle(rd);
+        snprintf(err, err_cap, "CreateProcess failed: %lu", GetLastError());
+        return false;
+    }
+
+    char buf[4096];
+    size_t total = 0;
+    int waited = 0;
+    bool cancelled = false;
+    while (1) {
+        DWORD avail = 0;
+        while (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+            DWORD got = 0;
+            DWORD want = avail < sizeof(buf) ? avail : (DWORD)sizeof(buf);
+            if (!ReadFile(rd, buf, want, &got, NULL) || got == 0) break;
+            if (out && total + 1 < out_cap) {
+                size_t room = out_cap - 1 - total;
+                size_t take = got < room ? got : room;
+                memcpy(out + total, buf, take);
+                total += take;
+                out[total] = '\0';
+            }
+        }
+        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) break;
+        if (cancel && *cancel) {
+            cancelled = true;
+            TerminateProcess(pi.hProcess, 130);
+            break;
+        }
+        if (waited >= timeout_ms) {
+            TerminateProcess(pi.hProcess, 124);
+            if (timed_out) *timed_out = true;
+            break;
+        }
+        Sleep(15);
+        waited += 15;
+    }
+    WaitForSingleObject(pi.hProcess, 2000);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    if (exit_code) *exit_code = (int)code;
+    CloseHandle(rd);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (cancelled) {
+        snprintf(err, err_cap, "Cancelled");
+        return false;
+    }
+    if (timed_out && *timed_out) snprintf(err, err_cap, "Process timed out");
+    return true;
+}
+
+bool proc_spawn(const char *cwd, const char *const argv[], const char *log_path,
+                ProcChild *child, char *err, size_t err_cap)
+{
+    if (child) memset(child, 0, sizeof(*child));
+    if (err && err_cap) err[0] = '\0';
+    if (!argv || !argv[0]) return false;
+    char cmdline[8192] = {0};
+    for (int i = 0; argv[i]; i++) {
+        if (i) cs_strlcat(cmdline, " ", sizeof(cmdline));
+        append_quoted(cmdline, sizeof(cmdline), argv[i]);
+    }
+    SECURITY_ATTRIBUTES sa = {0};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE log = CreateFileA(log_path, FILE_APPEND_DATA,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+    if (log == INVALID_HANDLE_VALUE) {
+        snprintf(err, err_cap, "Cannot open log %s", log_path);
+        return false;
+    }
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ, &sa, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+    STARTUPINFOA si = {0};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = log;
+    si.hStdError = log;
+    si.hStdInput = nul != INVALID_HANDLE_VALUE ? nul : GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi = {0};
+    BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
+                             CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, NULL,
+                             cwd && *cwd ? cwd : NULL, &si, &pi);
+    CloseHandle(log);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!ok) {
+        snprintf(err, err_cap, "CreateProcess failed: %lu", GetLastError());
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    child->handle = pi.hProcess;
+    child->pid = (long)pi.dwProcessId;
+    child->alive = true;
+    return true;
+}
+
+bool proc_child_alive(ProcChild *child)
+{
+    if (!child || !child->alive || !child->handle) return false;
+    if (WaitForSingleObject((HANDLE)child->handle, 0) == WAIT_TIMEOUT) return true;
+    child->alive = false;
+    return false;
+}
+
+void proc_child_stop(ProcChild *child, int grace_ms)
+{
+    if (!child || !child->handle) return;
+    if (child->alive) TerminateProcess((HANDLE)child->handle, 0);
+    WaitForSingleObject((HANDLE)child->handle, (DWORD)(grace_ms > 0 ? grace_ms : 3000));
+    CloseHandle((HANDLE)child->handle);
+    child->handle = NULL;
+    child->alive = false;
+}
+
+void proc_child_close(ProcChild *child)
+{
+    proc_child_stop(child, 0);
+}
+
 bool proc_find_in_path(const char *name, char *out, size_t cap)
 {
     if (out && cap) out[0] = '\0';
@@ -323,6 +477,180 @@ bool proc_run_stream(const char *cwd, const char *const argv[], int *exit_code)
     if (waitpid(pid, &status, 0) < 0) return false;
     if (exit_code) *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return true;
+}
+
+
+bool proc_run_cancellable(const char *cwd, const char *const argv[], char *out,
+                          size_t out_cap, int timeout_ms, volatile int *cancel,
+                          int *exit_code, bool *timed_out, char *err, size_t err_cap)
+{
+    if (out && out_cap) out[0] = '\0';
+    if (err && err_cap) err[0] = '\0';
+    if (exit_code) *exit_code = -1;
+    if (timed_out) *timed_out = false;
+    if (!argv || !argv[0]) return false;
+    int p[2];
+    if (pipe(p) != 0) return false;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(p[0]);
+        close(p[1]);
+        return false;
+    }
+    if (pid == 0) {
+        close(p[0]);
+        dup2(p[1], STDOUT_FILENO);
+        dup2(p[1], STDERR_FILENO);
+        close(p[1]);
+        if (cwd && *cwd) chdir(cwd);
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(p[1]);
+    int flags = fcntl(p[0], F_GETFL, 0);
+    fcntl(p[0], F_SETFL, flags | O_NONBLOCK);
+    size_t total = 0;
+    int waited = 0;
+    bool eof = false, reaped = false, cancelled = false;
+    int status = 0;
+    char buf[4096];
+    while (!eof || !reaped) {
+        struct pollfd pfd = {p[0], POLLIN, 0};
+        int pr = poll(&pfd, 1, 20);
+        if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP))) {
+            for (;;) {
+                ssize_t got = read(p[0], buf, sizeof(buf));
+                if (got > 0) {
+                    if (out && total + 1 < out_cap) {
+                        size_t room = out_cap - 1 - total;
+                        size_t take = (size_t)got < room ? (size_t)got : room;
+                        memcpy(out + total, buf, take);
+                        total += take;
+                        out[total] = '\0';
+                    }
+                } else if (got == 0) {
+                    eof = true;
+                    break;
+                } else {
+                    if (errno != EAGAIN && errno != EWOULDBLOCK) eof = true;
+                    break;
+                }
+            }
+        } else if (pr == 0) {
+            waited += 20;
+        }
+        if (!reaped) {
+            pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w == pid) reaped = true;
+        }
+        if (cancel && *cancel) {
+            if (!reaped) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+                reaped = true;
+            }
+            eof = true;
+            cancelled = true;
+        }
+        if (waited >= timeout_ms) {
+            if (!reaped) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+                reaped = true;
+            }
+            eof = true;
+            if (timed_out) *timed_out = true;
+        }
+        if (eof && reaped) break;
+    }
+    close(p[0]);
+    if (exit_code) *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (cancelled) {
+        snprintf(err, err_cap, "Cancelled");
+        return false;
+    }
+    if (timed_out && *timed_out) snprintf(err, err_cap, "Process timed out");
+    return true;
+}
+
+bool proc_spawn(const char *cwd, const char *const argv[], const char *log_path,
+                ProcChild *child, char *err, size_t err_cap)
+{
+    if (child) memset(child, 0, sizeof(*child));
+    if (err && err_cap) err[0] = '\0';
+    if (!argv || !argv[0]) return false;
+    pid_t pid = fork();
+    if (pid < 0) {
+        snprintf(err, err_cap, "fork failed: %s", strerror(errno));
+        return false;
+    }
+    if (pid == 0) {
+        setsid();
+        if (cwd && *cwd) chdir(cwd);
+        int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    child->pid = (long)pid;
+    child->alive = true;
+    return true;
+}
+
+bool proc_child_alive(ProcChild *child)
+{
+    if (!child || !child->alive || child->pid <= 0) return false;
+    int status = 0;
+    pid_t w = waitpid((pid_t)child->pid, &status, WNOHANG);
+    if (w == 0) return true;
+    child->alive = false;
+    return false;
+}
+
+void proc_child_stop(ProcChild *child, int grace_ms)
+{
+    if (!child || child->pid <= 0) return;
+    if (child->alive) {
+        kill(-(pid_t)child->pid, SIGTERM);
+        int waited = 0;
+        while (waited < (grace_ms > 0 ? grace_ms : 3000)) {
+            int status = 0;
+            pid_t w = waitpid((pid_t)child->pid, &status, WNOHANG);
+            if (w == (pid_t)child->pid) {
+                child->alive = false;
+                child->pid = 0;
+                return;
+            }
+            usleep(50000);
+            waited += 50;
+        }
+        kill(-(pid_t)child->pid, SIGKILL);
+        int status = 0;
+        waitpid((pid_t)child->pid, &status, 0);
+    }
+    child->pid = 0;
+    child->alive = false;
+}
+
+void proc_child_close(ProcChild *child)
+{
+    if (!child) return;
+    if (child->alive) proc_child_stop(child, 1000);
+    child->pid = 0;
 }
 
 bool proc_find_in_path(const char *name, char *out, size_t cap)

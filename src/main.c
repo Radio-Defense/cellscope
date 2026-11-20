@@ -5,7 +5,23 @@
 #include <string.h>
 
 #include "app.h"
+#include "runtime.h"
 #include "train.h"
+
+#include <curl/curl.h>
+
+static void console_runtime_progress(void *ctx, const PythonRuntime *rt)
+{
+    (void)ctx;
+    static int last_stage = -1;
+    static int last_pct = -1;
+    if ((int)rt->stage != last_stage || rt->percent >= last_pct + 5 || rt->stage == RT_STAGE_ERROR) {
+        last_stage = (int)rt->stage;
+        last_pct = rt->percent;
+        printf("[%3d%%] %s\n", rt->percent, rt->message);
+        fflush(stdout);
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -32,9 +48,30 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    if (app->setup_runtime_mode) {
+        PythonRuntime rt;
+        char rerr[1024] = {0};
+        if (!runtime_init(&rt, cs_project_root(), rerr, sizeof(rerr))) {
+            fprintf(stderr, "Runtime setup: %s\n", rerr);
+            free(app);
+            return 2;
+        }
+        printf("CellScope local runtime\n  runtime:  %s\n  minimind: %s\n  training: %s\n",
+               rt.dir, rt.minimind, rt.training);
+        bool skip_models = getenv("CELLSCOPE_SKIP_MODELS") != NULL;
+        bool ok = runtime_ensure(&rt, console_runtime_progress, NULL, !skip_models);
+        printf("\n%s\n", ok ? "Runtime ready." : rt.error);
+        free(app);
+        curl_global_cleanup();
+        return ok ? 0 : 3;
+    }
+
     if (app->train_mode) {
         int rc = train_run(&app->train);
         free(app);
+        curl_global_cleanup();
         return rc;
     }
 
@@ -126,6 +163,7 @@ int main(int argc, char **argv)
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
+    curl_global_cleanup();
     free(app);
     return 0;
 }

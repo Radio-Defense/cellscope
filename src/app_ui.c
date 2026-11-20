@@ -14,6 +14,7 @@ typedef struct {
     bool ever_connected;
     char device_label[128];
     int64_t last_poll_ok_ms;
+    RuntimeView runtime;
 } UiState;
 
 typedef struct {
@@ -60,6 +61,7 @@ static void snapshot(App *app, UiState *s)
     s->ever_connected = app->ever_connected;
     cs_strlcpy(s->device_label, app->device_label, sizeof(s->device_label));
     s->last_poll_ok_ms = app->last_poll_ok_ms;
+    s->runtime = app->runtime_view;
     SDL_UnlockMutex(app->mu);
 }
 
@@ -69,7 +71,7 @@ static void layout(App *app, Layout *l)
     float pad = 18, gap = 14;
     l->header = ui_rect(0, 0, (float)w, 64);
     l->footer = ui_rect(0, (float)h - 28, (float)w, 28);
-    float y = 76;
+    float y = 76 + app->ui_banner_h;
     float avail_h = (float)h - y - 28 - pad;
     float left_w = ((float)w - 2 * pad - gap) * 0.57f;
     float right_w = (float)w - 2 * pad - gap - left_w;
@@ -148,6 +150,43 @@ static const char *adb_short_state(const UiState *s, char *buf, size_t cap, UiCo
             break;
     }
     return buf;
+}
+
+static void draw_runtime_banner(App *app, UiState *s)
+{
+    if (app->ui_banner_h <= 0 || (!s->runtime.active && !s->runtime.error)) return;
+    Ui *ui = &app->ui;
+    float y = 64, h = (float)app->ui_banner_h;
+    UiColor accent = s->runtime.error ? UI_RED : UI_ACCENT;
+    ui_rect_fill(ui, ui_rect(0, y, (float)ui->win_w, h), UI_COLOR(9, 14, 19, 248));
+    ui_line(ui, 0, y + h - 0.5f, (float)ui->win_w, y + h - 0.5f, UI_BORDER_SOFT, 1);
+    ui_rect_fill(ui, ui_rect(0, y, 3, h), accent);
+    if (s->runtime.error) {
+        ui_circle(ui, 22, y + h / 2, 8, UI_COLOR(58, 31, 32, 255));
+        ui_text_center(ui, FONT_BOLD, 22, y + h / 2 - 7, 10, UI_RED, "!");
+    } else {
+        float a = (float)((SDL_GetTicks() % 900) / 900.0 * 360.0);
+        ui_arc(ui, 22, y + h / 2, 8, a, a + 280, 2.0f, UI_ACCENT);
+    }
+    char msg[640];
+    snprintf(msg, sizeof(msg), "%s%s%s", s->runtime.message[0] ? s->runtime.message : "Local AI",
+             s->runtime.error && s->runtime.error_text[0] ? " · " : "",
+             s->runtime.error ? s->runtime.error_text : "");
+    ui_text_ellipsis(ui, FONT_SEMIBOLD, 38, y + 8, 10.8f,
+                     s->runtime.error ? UI_COLOR(255, 178, 178, 255) : UI_TEXT,
+                     (float)ui->win_w - 300, msg);
+    char pct[32];
+    if (!s->runtime.error) {
+        snprintf(pct, sizeof(pct), "%d%%", s->runtime.percent);
+        ui_text_right(ui, FONT_MONO, (float)ui->win_w - 90, y + 8, 9.5f, UI_MUTED, pct);
+        UiRect bar = ui_rect(38, y + 28, (float)ui->win_w - 190, 3);
+        ui_round_rect(ui, bar, 1.5f, UI_COLOR(30, 42, 54, 255));
+        float frac = CS_MAX(0.0f, CS_MIN(1.0f, s->runtime.percent / 100.0f));
+        ui_round_rect(ui, ui_rect(bar.x, bar.y, bar.w * frac, bar.h), 1.5f, UI_ACCENT);
+    } else {
+        UiRect retry = ui_rect((float)ui->win_w - 92, y + 7, 74, 24);
+        if (ui_button(ui, retry, "Retry", BUTTON_SECONDARY, true)) app_retry_runtime(app);
+    }
 }
 
 static void draw_header(App *app, UiState *s)
@@ -727,7 +766,10 @@ static void draw_reader_panel(App *app, UiState *s, UiRect r)
 
     /* Backend detail / setup hint at the bottom. */
     float by = r.y + r.h - 82;
-    if (s->reader.detail[0]) {
+    if (s->runtime.error && s->runtime.error_text[0]) {
+        ui_text_wrapped_max(ui, r.x + 16, by, r.w - 32, 8.6f, UI_RED, 1, 2,
+                            s->runtime.error_text);
+    } else if (s->reader.detail[0]) {
         ui_text_wrapped_max(ui, r.x + 16, by, r.w - 32, 8.6f,
                             s->reader.is_vlm ? UI_FAINT : UI_AMBER, 1, 2,
                             s->reader.detail);
@@ -1039,6 +1081,7 @@ void app_draw(App *app)
     ui_background(ui);
     ui->block_interactive = s.modal_open;
     draw_header(app, &s);
+    draw_runtime_banner(app, &s);
     draw_camera_panel(app, &s, l.camera);
     draw_cell_panel(app, &s, l.cells);
     draw_reader_panel(app, &s, l.reader);

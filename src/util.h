@@ -23,6 +23,10 @@ bool cs_contains_ci(const char *haystack, const char *needle);
 void cs_path_join(char *dst, size_t cap, const char *a, const char *b);
 bool cs_mkdirs(const char *path);
 bool cs_file_exists(const char *path);
+bool cs_is_dir(const char *path);
+bool cs_exe_dir(char *out, size_t cap);
+bool cs_app_data_dir(char *out, size_t cap);
+const char *cs_project_root(void);
 bool cs_read_file(const char *path, uint8_t **data, size_t *len);
 bool cs_write_file(const char *path, const void *data, size_t len);
 

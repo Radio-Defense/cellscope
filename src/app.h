@@ -10,6 +10,8 @@
 #include "camera.h"
 #include "meter.h"
 #include "quality.h"
+#include "runtime.h"
+#include "server.h"
 #include "telephony.h"
 #include "train.h"
 #include "ui.h"
@@ -41,6 +43,19 @@ typedef struct {
 } MeterSample;
 
 typedef struct {
+    bool active;
+    bool ready;
+    bool error;
+    bool server_ready;
+    RuntimeStage stage;
+    int percent;
+    char message[512];
+    char detail[1024];
+    char error_text[1024];
+    char server_label[128];
+} RuntimeView;
+
+typedef struct {
     bool busy;
     bool visible;
     int64_t last_attempt_ms;
@@ -67,6 +82,8 @@ typedef struct {
 typedef struct App {
     /* options */
     bool train_mode;
+    bool setup_runtime_mode;
+    bool no_runtime;
     TrainConfig train;
     bool demo;
     bool demo_phone;
@@ -97,6 +114,19 @@ typedef struct App {
     Camera cam;
     bool camera_ok;
     char camera_error[512];
+    char ocr_dir[CS_PATH_MAX];
+    char project_root[CS_PATH_MAX];
+    PythonRuntime runtime;
+    MiniMindServer server;
+    RuntimeView runtime_view;
+    SDL_Thread *bootstrap_thread;
+    bool runtime_enabled;
+    bool retry_runtime;
+    bool prefer_minimind;
+    bool vlm_switched;
+    bool runtime_toasted;
+    char minimind_url[128];
+    int ui_banner_h;
     uint8_t *img_rgb;
     int img_w, img_h;
     SDL_Texture *img_tex;
@@ -174,6 +204,7 @@ void app_update(App *app);
 void app_draw(App *app);
 void app_handle_event(App *app, const SDL_Event *e);
 void app_request_check(App *app);
+void app_retry_runtime(App *app);
 void app_request_capture(App *app);
 void app_export_csv(App *app);
 void app_notify(App *app, bool error, const char *fmt, ...);

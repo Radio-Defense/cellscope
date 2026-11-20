@@ -11,6 +11,7 @@
 static void app_log(App *app, const char *fmt, ...);
 static int SDLCALL cellscope_adb_thread(void *data);
 static int SDLCALL cellscope_vlm_thread(void *data);
+static int SDLCALL cellscope_bootstrap_thread(void *data);
 
 static void cell_push_locked(App *app, const CellSample *s)
 {
@@ -178,6 +179,8 @@ void app_print_usage(void)
         "  --image PATH           Use a still image instead of a webcam (testing)\n"
         "  --no-modal             Skip the startup connection modal\n"
         "  --no-camera            Do not open the webcam (headless/modal testing)\n"
+        "  --no-runtime           Do not bootstrap the local MiniMind runtime\n"
+        "  --setup-runtime        Install the local Python + MiniMind assets and exit\n"
         "  --auto-connect         Try to connect to adb immediately at startup\n"
         "  --vlm MODE             auto | ollama | llama | tesseract | mock | off\n"
         "  --vlm-url URL          default http://127.0.0.1:11434 (Ollama)\n"
@@ -190,6 +193,10 @@ void app_print_usage(void)
         "  --screenshot-delay MS  wait before the screenshot (default 2500)\n"
         "  --run-ms MS            exit after this many milliseconds\n"
         "  --help                 show this help\n\n"
+        "By default the first run installs a private Python 3.11 + MiniMind runtime in\n"
+        "the CellScope application-data directory, then starts the local bridge on\n"
+        "port 8090. No --vlm arguments are needed. Use --vlm to attach an external\n"
+        "backend instead (this disables the automatic runtime).\n\n"
         "Readers (small local VLMs, no cloud):\n"
         "  Ollama\n"
         "    ollama pull moondream && ollama serve\n"
@@ -326,6 +333,10 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->no_modal = true;
         } else if (strcmp(a, "--no-camera") == 0) {
             app->no_camera = true;
+        } else if (strcmp(a, "--setup-runtime") == 0) {
+            app->setup_runtime_mode = true;
+        } else if (strcmp(a, "--no-runtime") == 0) {
+            app->no_runtime = true;
         } else if (strcmp(a, "--auto-connect") == 0) {
             app->auto_connect = true;
         } else if (strcmp(a, "--image") == 0 && i + 1 < argc) {
@@ -378,10 +389,6 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
         if (!app->train.dataset_dir[0]) {
             snprintf(err, err_cap, "--train requires a dataset folder");
             return APP_ARGS_ERROR;
-        }
-        if (!app->train.out_dir[0]) {
-            cs_path_join(app->train.out_dir, sizeof(app->train.out_dir),
-                         app->train.dataset_dir, "cellscope_training");
         }
         return APP_ARGS_OK;
     }
@@ -528,11 +535,29 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         app->adb.busy = false;
     }
 
-    char ocr_dir[CS_PATH_MAX];
-    cs_path_join(ocr_dir, sizeof(ocr_dir), app->capture_dir, ".ocr");
-    cs_mkdirs(ocr_dir);
-    vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model, ocr_dir);
+    cs_path_join(app->ocr_dir, sizeof(app->ocr_dir), app->capture_dir, ".ocr");
+    cs_mkdirs(app->ocr_dir);
+    vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model, app->ocr_dir);
     app->last_probe_ms = 0;
+
+    cs_strlcpy(app->project_root, cs_project_root(), sizeof(app->project_root));
+    app->runtime_enabled = !app->no_runtime && !app->demo && !app->demo_phone &&
+                           !app->image_mode && !app->vlm_explicit;
+    if (app->runtime_enabled) {
+        char rerr[1024] = {0};
+        if (!runtime_init(&app->runtime, app->project_root, rerr, sizeof(rerr))) {
+            app->runtime_enabled = false;
+            SDL_LockMutex(app->mu);
+            app->runtime_view.active = true;
+            app->runtime_view.error = true;
+            app->runtime_view.percent = 0;
+            cs_strlcpy(app->runtime_view.message, "Local AI setup unavailable",
+                       sizeof(app->runtime_view.message));
+            cs_strlcpy(app->runtime_view.error_text, rerr,
+                       sizeof(app->runtime_view.error_text));
+            SDL_UnlockMutex(app->mu);
+        }
+    }
 
     app->modal_open = !app->no_modal && !app->demo && !app->image_mode;
     app->tracker = (MeterTracker){0};
@@ -558,7 +583,12 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
 
     app->adb_thread = SDL_CreateThread(cellscope_adb_thread, "adb-poller", app);
     app->vlm_thread = SDL_CreateThread(cellscope_vlm_thread, "vlm-reader", app);
-    if (!app->adb_thread || !app->vlm_thread) {
+    if (app->runtime_enabled) {
+        app->bootstrap_thread =
+            SDL_CreateThread(cellscope_bootstrap_thread, "py-runtime", app);
+    }
+    if (!app->adb_thread || !app->vlm_thread ||
+        (app->runtime_enabled && !app->bootstrap_thread)) {
         snprintf(err, err_cap, "Could not create worker threads");
         return false;
     }
@@ -572,6 +602,11 @@ void app_shutdown(App *app)
 {
     if (!app) return;
     SDL_SetAtomicInt(&app->quit, 1);
+    if (app->runtime_enabled) runtime_cancel(&app->runtime);
+    if (app->bootstrap_thread) {
+        SDL_WaitThread(app->bootstrap_thread, NULL);
+        app->bootstrap_thread = NULL;
+    }
     if (app->adb_thread) {
         SDL_WaitThread(app->adb_thread, NULL);
         app->adb_thread = NULL;
@@ -617,6 +652,16 @@ static void publish_frame(App *app, const uint8_t *rgb, int w, int h, int64_t ts
 void app_update(App *app)
 {
     int64_t now = cs_now_ms();
+    RuntimeView rv;
+    SDL_LockMutex(app->mu);
+    rv = app->runtime_view;
+    SDL_UnlockMutex(app->mu);
+    app->ui_banner_h = (rv.active || rv.error) ? 38 : 0;
+    if (rv.server_ready && !app->runtime_toasted) {
+        app->runtime_toasted = true;
+        app_notify(app, false, "MiniMind reader online — %s", rv.server_label);
+    }
+    if (!rv.server_ready && app->runtime_toasted) app->runtime_toasted = false;
 
     if (app->image_mode && app->img_rgb) {
         if (now - app->last_snapshot_ms >= 400) {
@@ -708,6 +753,142 @@ void app_update(App *app)
     }
 }
 
+
+
+static void runtime_publish(App *app, bool active, bool ready, bool error, bool server_ready,
+                            RuntimeStage stage, int percent, const char *message,
+                            const char *detail, const char *error_text, const char *label)
+{
+    SDL_LockMutex(app->mu);
+    RuntimeView *v = &app->runtime_view;
+    v->active = active;
+    v->ready = ready;
+    v->error = error;
+    v->server_ready = server_ready;
+    v->stage = stage;
+    v->percent = percent;
+    cs_strlcpy(v->message, message ? message : "", sizeof(v->message));
+    cs_strlcpy(v->detail, detail ? detail : "", sizeof(v->detail));
+    cs_strlcpy(v->error_text, error_text ? error_text : "", sizeof(v->error_text));
+    cs_strlcpy(v->server_label, label ? label : "", sizeof(v->server_label));
+    SDL_UnlockMutex(app->mu);
+}
+
+static void runtime_progress_cb(void *ctx, const PythonRuntime *rt)
+{
+    App *app = ctx;
+    runtime_publish(app, true, rt->ready, rt->stage == RT_STAGE_ERROR, false, rt->stage,
+                    rt->percent, rt->message, rt->detail,
+                    rt->stage == RT_STAGE_ERROR ? rt->error : "", NULL);
+}
+
+static void runtime_wait_retry(App *app)
+{
+    while (!SDL_GetAtomicInt(&app->quit)) {
+        SDL_LockMutex(app->mu);
+        bool retry = app->retry_runtime;
+        app->retry_runtime = false;
+        SDL_UnlockMutex(app->mu);
+        if (retry) return;
+        SDL_Delay(200);
+    }
+}
+
+static int SDLCALL cellscope_bootstrap_thread(void *data)
+{
+    App *app = data;
+    PythonRuntime *rt = &app->runtime;
+    while (!SDL_GetAtomicInt(&app->quit)) {
+        runtime_publish(app, true, false, false, false, RT_STAGE_PREPARE, 0,
+                        "Preparing local AI runtime…", "", "", NULL);
+        bool ok = runtime_ensure(rt, runtime_progress_cb, app, true);
+        if (SDL_GetAtomicInt(&app->quit)) break;
+        if (!ok) {
+            runtime_publish(app, true, false, true, false, RT_STAGE_ERROR, rt->percent,
+                            "Local AI setup failed", rt->detail, rt->error, NULL);
+            runtime_wait_retry(app);
+            continue;
+        }
+
+        char custom[CS_PATH_MAX];
+        bool custom_ok = runtime_custom_checkpoint(rt, custom, sizeof(custom));
+        char outdir[CS_PATH_MAX];
+        cs_path_join(outdir, sizeof(outdir), rt->minimind, "out");
+        const char *weight = custom_ok ? "cellscope_meter" : "sft_vlm";
+        const char *save_dir = custom_ok ? rt->training : outdir;
+        const char *label = custom_ok ? "MiniMind · trained" : "MiniMind · baseline";
+
+        runtime_publish(app, true, true, false, false, RT_STAGE_READY, 98,
+                        "Loading the MiniMind checkpoint…",
+                        custom_ok ? "Using your trained cellscope_meter checkpoint."
+                                  : "No trained checkpoint yet — using the baseline MiniMind "
+                                    "SFT model. Train with --train for meter accuracy.",
+                        "", label);
+        server_stop(&app->server);
+        char serr[1024] = {0};
+        char script[CS_PATH_MAX], log[CS_PATH_MAX];
+        cs_path_join(script, sizeof(script), rt->scripts, "serve_minimind_vlm.py");
+        cs_path_join(log, sizeof(log), rt->dir, "minimind-server.log");
+        if (!server_start(&app->server, rt->python, script, rt->minimind, save_dir, weight,
+                          rt->port, log, serr, sizeof(serr))) {
+            runtime_publish(app, true, true, true, false, RT_STAGE_ERROR, 98,
+                            "MiniMind server could not start", "", serr, NULL);
+            runtime_wait_retry(app);
+            continue;
+        }
+        if (!server_wait_ready(&app->server, 180000, &rt->cancel)) {
+            runtime_publish(app, true, true, true, false, RT_STAGE_ERROR, 98,
+                            "MiniMind server did not become ready",
+                            app->server.error, app->server.error, NULL);
+            server_stop(&app->server);
+            runtime_wait_retry(app);
+            continue;
+        }
+        char url[128];
+        snprintf(url, sizeof(url), "http://127.0.0.1:%d", rt->port);
+        SDL_LockMutex(app->mu);
+        app->prefer_minimind = true;
+        app->vlm_switched = false;
+        cs_strlcpy(app->minimind_url, url, sizeof(app->minimind_url));
+        SDL_UnlockMutex(app->mu);
+        runtime_publish(app, false, true, false, true, RT_STAGE_READY, 100,
+                        "MiniMind reader ready", "", "", label);
+        app_log(app, "minimind server ready: %s (%s)", url, label);
+
+        int failures = 0;
+        while (!SDL_GetAtomicInt(&app->quit)) {
+            SDL_Delay(3000);
+            if (server_healthy(&app->server)) {
+                failures = 0;
+                continue;
+            }
+            failures++;
+            if (failures < 2) continue;
+            SDL_LockMutex(app->mu);
+            app->prefer_minimind = false;
+            SDL_UnlockMutex(app->mu);
+            runtime_publish(app, true, true, true, false, RT_STAGE_ERROR, 100,
+                            "MiniMind server stopped", app->server.error,
+                            "The local reader server stopped. Retrying…", label);
+            server_stop(&app->server);
+            break;
+        }
+        if (SDL_GetAtomicInt(&app->quit)) break;
+        SDL_Delay(1500);
+    }
+    server_stop(&app->server);
+    SDL_LockMutex(app->mu);
+    app->prefer_minimind = false;
+    SDL_UnlockMutex(app->mu);
+    return 0;
+}
+
+void app_retry_runtime(App *app)
+{
+    SDL_LockMutex(app->mu);
+    app->retry_runtime = true;
+    SDL_UnlockMutex(app->mu);
+}
 
 static void demo_publish_cell(App *app)
 {
@@ -855,6 +1036,47 @@ static int SDLCALL cellscope_vlm_thread(void *data)
     int64_t last_read = 0;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
+        bool prefer = false;
+        char prefer_url[128] = {0};
+        bool switched = false;
+        SDL_LockMutex(app->mu);
+        prefer = app->prefer_minimind && !app->vlm_explicit;
+        cs_strlcpy(prefer_url, app->minimind_url, sizeof(prefer_url));
+        switched = app->vlm_switched;
+        SDL_UnlockMutex(app->mu);
+
+        if (prefer && !switched) {
+            vlm_config_init(&app->vlm, "llama", prefer_url, "minimind-meter", app->ocr_dir);
+            vlm_config_probe(&app->vlm);
+            if (app->vlm.active == VLM_BACKEND_LLAMA) {
+                cs_strlcpy(app->vlm.label, "MiniMind · local", sizeof(app->vlm.label));
+                cs_strlcpy(app->vlm.detail,
+                           "Local MiniMind served by CellScope's private Python runtime.",
+                           sizeof(app->vlm.detail));
+            }
+            app->vlm_switched = true;
+            SDL_LockMutex(app->mu);
+            cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
+            cs_strlcpy(app->reader.detail, app->vlm.detail, sizeof(app->reader.detail));
+            app->reader.kind = app->vlm.active;
+            app->reader.is_vlm = app->vlm.is_vlm;
+            cs_strlcpy(app->reader.status, "Connecting to MiniMind…", sizeof(app->reader.status));
+            SDL_UnlockMutex(app->mu);
+            app_log(app, "switched to MiniMind server: %s", app->vlm.detail);
+        } else if (!prefer && switched) {
+            vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model,
+                            app->ocr_dir);
+            vlm_config_probe(&app->vlm);
+            app->vlm_switched = false;
+            SDL_LockMutex(app->mu);
+            cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
+            cs_strlcpy(app->reader.detail, app->vlm.detail, sizeof(app->reader.detail));
+            app->reader.kind = app->vlm.active;
+            app->reader.is_vlm = app->vlm.is_vlm;
+            SDL_UnlockMutex(app->mu);
+            app_log(app, "switched away from MiniMind server: %s", app->vlm.label);
+        }
+
         if (!app->vlm.probed || (!app->vlm.available &&
                                  now - app->vlm.last_probe_ms > 15000)) {
             vlm_config_probe(&app->vlm);

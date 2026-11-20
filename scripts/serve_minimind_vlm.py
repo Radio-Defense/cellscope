@@ -66,15 +66,17 @@ def load_model(args):
     import torch
     from transformers import AutoTokenizer
 
+    requested_save_dir = args.save_dir
     minimind = os.path.abspath(args.minimind)
     if not os.path.isdir(minimind):
         raise SystemExit(f"MiniMind-V checkout not found: {minimind}")
+    # Resolve user-facing relative paths before changing into the MiniMind tree.
+    save_dir = (os.path.abspath(requested_save_dir) if requested_save_dir
+                else os.path.join(minimind, "out"))
     os.chdir(minimind)
     sys.path.insert(0, minimind)
 
     from model.model_vlm import MiniMindVLM, VLMConfig
-
-    save_dir = os.path.abspath(args.save_dir) if args.save_dir else os.path.join(minimind, "out")
     suffix = "_moe" if args.use_moe else ""
     weight_path = os.path.join(save_dir, f"{args.weight}_{args.hidden_size}{suffix}.pth")
     if not os.path.isfile(weight_path):

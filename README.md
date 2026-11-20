@@ -15,8 +15,12 @@ state and a webcam at the same time.
 - **On launch:** a step-by-step modal explains how to connect the phone over
   ADB. It only disappears when a device is authorized; failures show concrete
   fixes.
+- **First run:** CellScope installs its own private Python runtime, ML packages,
+  and MiniMind assets, then starts the local reader bridge in the background.
 
-Everything is local. No telemetry, no cloud API, no images leave the machine.
+Camera frames and readings stay local. No telemetry, no cloud inference, and no
+images are uploaded. The one-time runtime/model downloads come from uv's GitHub
+releases and ModelScope.
 
 ![CellScope demo](docs/screenshot-main.png)
 
@@ -32,6 +36,8 @@ Everything is local. No telemetry, no cloud API, no images leave the machine.
 | OCR fallback | Tesseract subprocess |
 | PNG | stb_image / stb_image_write |
 | Training | MiniMind-V submodule + a small Parquet converter |
+| Private runtime | uv-managed CPython 3.11 + venv, auto-installed on first run |
+| Local bridge | MiniMind-V PyTorch model behind an OpenAI-compatible HTTP endpoint |
 
 ## Build
 
@@ -86,24 +92,80 @@ group) and must have working Android udev rules for adb.
 ```bash
 # macOS
 open build/cellscope.app
-# or with options:
-build/cellscope.app/Contents/MacOS/cellscope --demo
-build/cellscope.app/Contents/MacOS/cellscope --no-camera --auto-connect  # connection-modal test
-
 # Linux / Windows
 ./build/cellscope
 ```
 
+Just running the binary is enough. On first use CellScope bootstraps its own
+local AI runtime, downloads the model files, and starts the MiniMind bridge in the
+background.
+
+### First run: private Python + MiniMind
+
+You do not need to install or prepare system Python, pip, virtualenv, uv, or
+ModelScope by hand. On the first GUI launch (when not using `--demo`,
+`--image`, or an explicit `--vlm`), CellScope:
+
+1. downloads a `uv` launcher into its application-data directory;
+2. installs a private CPython 3.11 under that directory;
+3. creates a private virtual environment and installs
+   `torch`, `torchvision`, `transformers==4.57.6`, `datasets==3.6.0`,
+   `numpy==1.26.4`, `pyarrow==23.0.0`, `Pillow`, `safetensors`, and `modelscope`;
+4. downloads the frozen SigLIP2 vision encoder and the MiniMind language/base
+   SFT weights from ModelScope;
+5. starts this in the background with the private interpreter:
+
+```bash
+python scripts/serve_minimind_vlm.py \
+  --minimind third_party/minimind-v \
+  --save_dir ./training \
+  --weight cellscope_meter \
+  --port 8090
+```
+
+The effective paths are absolute and point at the bundled MiniMind checkout. If
+`training/cellscope_meter_768.pth` does not exist yet, the same bridge starts
+with the downloaded baseline `sft_vlm_768.pth`; train with `--train` to replace
+it with a meter-specific checkpoint. A banner shows download/install progress.
+The app remains usable with the Tesseract fallback while setup runs.
+
+- macOS: `~/Library/Application Support/CellScope/runtime`
+- Linux: `~/.local/share/CellScope/runtime`
+- Windows: `%LOCALAPPDATA%\CellScope\runtime`
+
+The setup log is `runtime/bootstrap.log`; the server log is
+`runtime/minimind-server.log`. Delete the runtime directory to force a clean
+reinstall. Training output defaults to `<project>/training` in a source
+checkout, or the app-data `training` directory in a packaged build. Override it
+with `CELLSCOPE_TRAINING_DIR`.
+
+Useful flags:
+
+```bash
+# build/update the private runtime and exit (no GUI)
+cellscope --setup-runtime
+# skip the first-run bootstrap
+cellscope --no-runtime
+# use an external backend instead of the built-in MiniMind runtime
+cellscope --vlm ollama --vlm-model moondream
+```
+
+`--vlm …`, `--demo`, `--image`, and `--no-runtime` disable the automatic
+MiniMind bootstrap. Set `CELLSCOPE_RUNTIME_DIR` to relocate the runtime and
+`CELLSCOPE_RUNTIME_PACKAGES` to override the package list for development.
+
 ### Readers
 
-The app probes local backends in this order:
+Without arguments the app attaches to the MiniMind bridge it started itself.
+If the private runtime cannot be installed, or when an explicit backend is
+requested, it falls back in this order:
 
-1. **Ollama** with a vision-capable model
-2. **llama.cpp server** exposing a recognized multimodal model
+1. **Ollama** with a vision-capable model (`--vlm ollama`)
+2. **llama.cpp server** exposing a recognized multimodal model (`--vlm llama`)
 3. **Tesseract OCR** fallback (requires `tesseract` on `PATH`)
 4. off
 
-Recommended tiny VLM (Ollama):
+Optional external tiny VLM (Ollama):
 
 ```bash
 ollama pull moondream          # ~1.7 GB, 1.8B params
@@ -219,23 +281,20 @@ IMG_0014.jpg,940.0MHz
   point than dozens.
 - A single CSV is auto-detected. Use `--train-csv` if there are several.
 
-### 2. Prerequisites
+### 2. Runtime
+
+`--train` uses the same private Python runtime described above. On first use it
+installs CPython, PyTorch, Transformers, Datasets, pyarrow, Pillow, ModelScope,
+and downloads SigLIP2 plus the MiniMind base weights automatically. No manual
+`pip`, venv, or ModelScope commands are needed. The source checkout must have
+the MiniMind-V submodule:
 
 ```bash
 git submodule update --init --recursive
-python3 -m venv .venv && source .venv/bin/activate
-python -m pip install -r third_party/minimind-v/requirements.txt
-python -m pip install pillow pyarrow
-python -m pip install modelscope
-modelscope download --model gongjy/siglip2-base-p32-256-ve \
-  --local_dir third_party/minimind-v/model/siglip2-base-p32-256-ve
-modelscope download --model gongjy/minimind-3v-pytorch llm_768.pth \
-  --local_dir third_party/minimind-v/out
 ```
 
-MiniMind-V needs its frozen SigLIP2 vision encoder and the `llm_768.pth` base
-language checkpoint. The training switch prints these exact commands if a
-resource is missing. `--train-dry-run` only needs Pillow + pyarrow.
+`--train-dry-run` installs the same Python runtime but stops after the Parquet
+is built (it does not require SigLIP2 or the base weights).
 
 ### 3. Train
 
@@ -259,7 +318,7 @@ Useful options:
 | Option | Meaning |
 |---|---|
 | `--train-csv FILE` | choose the labels CSV explicitly |
-| `--train-out DIR` | output; default `DIR/cellscope_training` |
+| `--train-out DIR` | output; default `<project>/training` (or app-data `training`) |
 | `--train-minimind PATH` | alternate MiniMind-V checkout |
 | `--train-unit UNIT` | unit for bare CSV numbers |
 | `--train-augment N` | extra handheld/augmented variants per image |
@@ -281,6 +340,7 @@ training/
 
 Under the hood the C binary:
 
+0. ensures the private Python runtime and downloads MiniMind assets;
 1. validates every image and frequency, converts to Hz, and writes a normalized
    CSV;
 2. runs `scripts/prepare_minimind_dataset.py`, which embeds the images and
@@ -289,26 +349,29 @@ Under the hood the C binary:
    `--from_weight llm --freeze_llm 1`.
 4. prints the serving command.
 
-### 4. Serve the trained model to CellScope
+### 4. Use the trained model with CellScope
 
-MiniMind-V weights are PyTorch, not GGUF. The included
-`scripts/serve_minimind_vlm.py` is a small OpenAI-compatible vision bridge, so
-the C app can use them through its existing `llama` backend:
+Nothing else is required. Once `training/cellscope_meter_768.pth` exists, the
+next launch starts the bridge with it automatically:
 
 ```bash
-python scripts/serve_minimind_vlm.py \
-  --minimind third_party/minimind-v \
-  --save_dir ./training \
-  --weight cellscope_meter \
-  --port 8090
-
-./build/cellscope.app/Contents/MacOS/cellscope \
-  --vlm llama --vlm-url http://127.0.0.1:8090 --vlm-model minimind-meter
+./build/cellscope.app/Contents/MacOS/cellscope
 ```
 
 The bridge loads the checkpoint, accepts the app's `image_url` base64 payload,
 prepends MiniMind-V's image tokens, and returns an OpenAI-style
-`choices[0].message.content` answer.
+`choices[0].message.content` answer. The header and reader pill switch to
+**MiniMind · local**. If you want to run the bridge manually (for example from
+another machine), use the printed command:
+
+```bash
+python scripts/serve_minimind_vlm.py \
+  --minimind third_party/minimind-v \
+  --save_dir ./training --weight cellscope_meter --port 8090
+```
+
+and point an explicit backend at it with
+`--vlm llama --vlm-url http://127.0.0.1:8090`.
 
 > Training quality depends on the dataset. A 65M-parameter VLM is good at a
 > narrow, repetitive task like reading one meter model; it is not a general OCR
@@ -319,20 +382,25 @@ prepends MiniMind-V's image tokens, and returns an OpenAI-style
 ## Architecture
 
 ```text
-Camera (SDL3) 8 fps
-   │  RGB frames
-   ▼
+first run: uv → CPython 3.11 → venv → packages → SigLIP2 + MiniMind
+                                              │
+                                              ▼
+                                   MiniMind bridge :8090
+                                              │
+Camera (SDL3) 8 fps                           │
+   │  RGB frames                               │
+   ▼                                          │
 Burst ring (12) ── quality score ──► best unused frame
-                                        │
-                                        ▼
-                               Ollama / llama.cpp / Tesseract
-                                        │  JSON / text
-                                        ▼
-                                meter parser → Hz
-                                        │
-                 2 stable samples ──► readings list + PNG
-                                        ▲
-adb poller (1 s) ── telephony.registry ─┘
+                                              │
+                                              ▼
+                              MiniMind / Ollama / llama.cpp / Tesseract
+                                              │  JSON / text
+                                              ▼
+                                    meter parser → Hz
+                                              │
+                    2 stable samples ──► readings list + PNG
+                                              ▲
+                    adb poller (1 s) ── telephony.registry
 ```
 
 Source map:
@@ -349,6 +417,8 @@ Source map:
 | `src/meter.c` | unit parsing, stability tracker |
 | `src/vlm.c` | Ollama/llama server/Tesseract backends |
 | `src/train.c` | `--train` pipeline |
+| `src/runtime.c` | uv/Python/venv/packages/model bootstrap |
+| `src/server.c` | MiniMind bridge spawn, health check, shutdown |
 | `scripts/` | Parquet builder and MiniMind-V inference bridge |
 | `third_party/minimind-v` | upstream training/vision code (submodule) |
 
@@ -375,6 +445,16 @@ A camera-free end-to-end reader test:
 `--demo` runs the full UI with synthetic cell samples and a synthetic meter
 feed, with no phone or camera.
 
+Runtime bootstrap smoke test (uses a light package set and does not download
+models):
+
+```bash
+CELLSCOPE_RUNTIME_DIR=/tmp/cellscope-runtime \
+CELLSCOPE_RUNTIME_PACKAGES=pyarrow,pillow \
+CELLSCOPE_SKIP_MODELS=1 \
+./build/cellscope.app/Contents/MacOS/cellscope --setup-runtime
+```
+
 ## Known limitations
 
 - Some carriers/OEMs do not expose NR or timing-advance fields through
@@ -384,8 +464,17 @@ feed, with no phone or camera.
 - The Tesseract fallback is not a VLM and is more sensitive to glare/angle.
   Prefer Ollama or llama.cpp for production.
 - Lists are in memory. Use **Export CSV** to persist.
-- MiniMind-V model weights are not bundled; the training step downloads the
-  base checkpoint and vision encoder.
+- First-run setup needs network and enough disk for PyTorch plus MiniMind
+  assets (several GB, especially on Linux CUDA wheels). The banner shows
+  progress; deleting the runtime directory forces a clean retry.
+- Until you train, the automatic reader uses the upstream generic MiniMind SFT
+  checkpoint, which is not meter-specific. Train with `--train` for accuracy.
+- If you train into a non-default directory, set `CELLSCOPE_TRAINING_DIR` so the
+  boot-time server finds `cellscope_meter_768.pth`.
+- The private environment installs PyPI wheels. A CUDA-specific PyTorch build
+  may need manual `uv pip install` into the private venv for GPU training.
+- MiniMind-V model weights are not shipped in the repository; they are fetched
+  on first run or by `--setup-runtime`.
 
 ## Licenses
 

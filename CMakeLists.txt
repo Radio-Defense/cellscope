@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(CellScope VERSION 0.1.0 LANGUAGES C)
+project(CellScope VERSION 0.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -46,6 +46,8 @@ set(CELLSCOPE_SOURCES
   src/ui.c
   src/fonts.c
   src/proc.c
+  src/runtime.c
+  src/server.c
   src/adb.c
   src/camera.c
   src/vlm.c
@@ -68,6 +70,7 @@ target_compile_definitions(cellscope PRIVATE
   CELLSCOPE_VERSION="${PROJECT_VERSION}"
   CELLSCOPE_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
   CELLSCOPE_SOURCE_SCRIPTS="${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+  CELLSCOPE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
   $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
 )
 if(APPLE)
@@ -100,7 +103,10 @@ add_custom_command(TARGET cellscope POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
           "$<TARGET_FILE_DIR:cellscope>/scripts"
-  COMMENT "Copying CellScope assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_CURRENT_SOURCE_DIR}/third_party/minimind-v"
+          "$<TARGET_FILE_DIR:cellscope>/third_party/minimind-v"
+  COMMENT "Copying CellScope assets and MiniMind-V runtime"
 )
 
 if(APPLE)
@@ -119,6 +125,7 @@ install(TARGETS cellscope
 )
 install(DIRECTORY assets/ DESTINATION share/cellscope/assets)
 install(DIRECTORY scripts/ DESTINATION share/cellscope/scripts)
+install(DIRECTORY third_party/minimind-v DESTINATION share/cellscope/third_party)
 
 if(CELLSCOPE_BUILD_TESTS)
   enable_testing()

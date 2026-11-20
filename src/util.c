@@ -10,6 +10,10 @@
 #include <sys/types.h>
 #include <time.h>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 #ifdef _WIN32
 #include <direct.h>
 #include <windows.h>
@@ -130,6 +134,138 @@ bool cs_file_exists(const char *path)
 {
     struct stat st;
     return path && stat(path, &st) == 0;
+}
+
+bool cs_is_dir(const char *path)
+{
+    struct stat st;
+    return path && stat(path, &st) == 0 && (st.st_mode & S_IFDIR);
+}
+
+bool cs_exe_dir(char *out, size_t cap)
+{
+    if (out && cap) out[0] = '\0';
+    char path[CS_PATH_MAX];
+#ifdef _WIN32
+    DWORD n = GetModuleFileNameA(NULL, path, (DWORD)sizeof(path));
+    if (n == 0 || n >= sizeof(path)) return false;
+    char *slash = strrchr(path, '\\');
+    if (!slash) slash = strrchr(path, '/');
+    if (!slash) return false;
+    *slash = '\0';
+    cs_strlcpy(out, path, cap);
+    return true;
+#elif defined(__APPLE__)
+    uint32_t size = (uint32_t)sizeof(path);
+    if (_NSGetExecutablePath(path, &size) != 0) return false;
+    char *slash = strrchr(path, '/');
+    if (!slash) return false;
+    *slash = '\0';
+    cs_strlcpy(out, path, cap);
+    return true;
+#else
+    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (n <= 0) return false;
+    path[n] = '\0';
+    char *slash = strrchr(path, '/');
+    if (!slash) return false;
+    *slash = '\0';
+    cs_strlcpy(out, path, cap);
+    return true;
+#endif
+}
+
+bool cs_app_data_dir(char *out, size_t cap)
+{
+    if (out && cap) out[0] = '\0';
+    const char *home = getenv("HOME");
+#ifdef _WIN32
+    if (!home) home = getenv("USERPROFILE");
+    const char *base = getenv("LOCALAPPDATA");
+    if (!base) base = getenv("APPDATA");
+    if (base && *base) {
+        cs_path_join(out, cap, base, "CellScope");
+        return true;
+    }
+    if (home && *home) {
+        cs_path_join(out, cap, home, "AppData/Local/CellScope");
+        return true;
+    }
+#elif defined(__APPLE__)
+    if (home && *home) {
+        cs_path_join(out, cap, home, "Library/Application Support/CellScope");
+        return true;
+    }
+#else
+    const char *xdg = getenv("XDG_DATA_HOME");
+    if (xdg && *xdg) {
+        cs_path_join(out, cap, xdg, "CellScope");
+        return true;
+    }
+    if (home && *home) {
+        cs_path_join(out, cap, home, ".local/share/CellScope");
+        return true;
+    }
+#endif
+    return false;
+}
+
+static bool root_has_project(const char *dir)
+{
+    if (!dir || !*dir) return false;
+    char probe[CS_PATH_MAX];
+    cs_path_join(probe, sizeof(probe), dir,
+                 "third_party/minimind-v/trainer/train_sft_vlm.py");
+    if (cs_file_exists(probe)) return true;
+    cs_path_join(probe, sizeof(probe), dir, "scripts/serve_minimind_vlm.py");
+    return cs_file_exists(probe);
+}
+
+const char *cs_project_root(void)
+{
+    static char root[CS_PATH_MAX];
+    if (root[0]) return root;
+    const char *env = getenv("CELLSCOPE_ROOT");
+    if (env && root_has_project(env)) {
+        cs_strlcpy(root, env, sizeof(root));
+        return root;
+    }
+    char cwd[CS_PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd))) {
+        char walk[CS_PATH_MAX];
+        cs_strlcpy(walk, cwd, sizeof(walk));
+        for (int i = 0; i < 5; i++) {
+            if (root_has_project(walk)) {
+                cs_strlcpy(root, walk, sizeof(root));
+                return root;
+            }
+            char *slash = strrchr(walk, '/');
+            if (!slash) break;
+            *slash = '\0';
+        }
+    }
+    char exe[CS_PATH_MAX];
+    if (cs_exe_dir(exe, sizeof(exe))) {
+        char walk[CS_PATH_MAX];
+        cs_strlcpy(walk, exe, sizeof(walk));
+        for (int i = 0; i < 5; i++) {
+            if (root_has_project(walk)) {
+                cs_strlcpy(root, walk, sizeof(root));
+                return root;
+            }
+            char *slash = strrchr(walk, '/');
+            if (!slash) break;
+            *slash = '\0';
+        }
+    }
+#ifdef CELLSCOPE_SOURCE_ROOT
+    if (root_has_project(CELLSCOPE_SOURCE_ROOT)) {
+        cs_strlcpy(root, CELLSCOPE_SOURCE_ROOT, sizeof(root));
+        return root;
+    }
+#endif
+    if (getcwd(cwd, sizeof(cwd))) cs_strlcpy(root, cwd, sizeof(root));
+    return root;
 }
 
 bool cs_read_file(const char *path, uint8_t **data, size_t *len)

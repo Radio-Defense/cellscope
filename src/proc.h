@@ -18,6 +18,25 @@ bool proc_run_in(const char *cwd, const char *const argv[], char *out, size_t ou
  * training jobs; returns true when the process was started, with exit code. */
 bool proc_run_stream(const char *cwd, const char *const argv[], int *exit_code);
 
+/* Same as proc_run_in, but polls *cancel and kills the child when it becomes
+ * non-zero. */
+bool proc_run_cancellable(const char *cwd, const char *const argv[], char *out,
+                          size_t out_cap, int timeout_ms, volatile int *cancel,
+                          int *exit_code, bool *timed_out, char *err, size_t err_cap);
+
+/* Fire-and-forget child with stdout/stderr appended to log_path. */
+typedef struct {
+    void *handle;
+    long pid;
+    bool alive;
+} ProcChild;
+
+bool proc_spawn(const char *cwd, const char *const argv[], const char *log_path,
+                ProcChild *child, char *err, size_t err_cap);
+bool proc_child_alive(ProcChild *child);
+void proc_child_stop(ProcChild *child, int grace_ms);
+void proc_child_close(ProcChild *child);
+
 /* Find an executable in PATH (and, on Windows, PATHEXT). */
 bool proc_find_in_path(const char *name, char *out, size_t cap);
 

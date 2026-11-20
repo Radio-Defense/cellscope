@@ -7,6 +7,7 @@
 
 #include "meter.h"
 #include "proc.h"
+#include "runtime.h"
 #include "vlm.h"
 
 #ifdef _WIN32
@@ -238,6 +239,23 @@ static bool find_scripts_dir(char *out, size_t cap)
             return true;
         }
     }
+    char exe[CS_PATH_MAX];
+    if (cs_exe_dir(exe, sizeof(exe))) {
+        const char *cands[] = {"scripts", "../Resources/scripts", "../share/cellscope/scripts",
+                               "/usr/local/share/cellscope/scripts",
+                               "/usr/share/cellscope/scripts"};
+        for (size_t i = 0; i < CS_ARRAY_LEN(cands); i++) {
+            char base[CS_PATH_MAX];
+            if (cands[i][0] == '/') cs_strlcpy(base, cands[i], sizeof(base));
+            else cs_path_join(base, sizeof(base), exe, cands[i]);
+            char probe[CS_PATH_MAX];
+            cs_path_join(probe, sizeof(probe), base, "prepare_minimind_dataset.py");
+            if (cs_file_exists(probe)) {
+                cs_strlcpy(out, base, cap);
+                return true;
+            }
+        }
+    }
     return false;
 }
 
@@ -380,6 +398,20 @@ static int write_manifest(TrainConfig *cfg, const char *csv, char *manifest,
     return 0;
 }
 
+static void train_runtime_progress(void *ctx, const PythonRuntime *rt)
+{
+    (void)ctx;
+    static int last_stage = -1;
+    static int last_pct = -1;
+    if ((int)rt->stage != last_stage || rt->percent >= last_pct + 5 ||
+        rt->stage == RT_STAGE_ERROR) {
+        last_stage = (int)rt->stage;
+        last_pct = rt->percent;
+        printf("[runtime %3d%%] %s\n", rt->percent, rt->message);
+        fflush(stdout);
+    }
+}
+
 int train_run(TrainConfig *cfg)
 {
     printf("\nCellScope training · MiniMind-V\n");
@@ -404,7 +436,32 @@ int train_run(TrainConfig *cfg)
     printf("Dataset:  %s\n", cfg->dataset_dir);
     printf("Labels:   %s\n", cfg->csv_path);
     printf("Output:   %s\n", cfg->out_dir);
-    printf("MiniMind: %s\n\n", cfg->minimind_dir);
+    printf("MiniMind: %s\n", cfg->minimind_dir);
+
+    PythonRuntime rt;
+    char rerr[1024] = {0};
+    if (cfg->minimind_dir[0] &&
+        strcmp(cfg->minimind_dir, "third_party/minimind-v") != 0) {
+#ifdef _WIN32
+        _putenv_s("CELLSCOPE_MINIMIND", cfg->minimind_dir);
+#else
+        setenv("CELLSCOPE_MINIMIND", cfg->minimind_dir, 1);
+#endif
+    }
+    if (!runtime_init(&rt, cs_project_root(), rerr, sizeof(rerr))) {
+        printf("Could not initialize the local Python runtime: %s\n", rerr);
+        return 2;
+    }
+    printf("Runtime:  %s\n", rt.dir);
+    printf("Local Python will be installed/verified on first use.\n\n");
+    if (!runtime_ensure(&rt, train_runtime_progress, NULL, !cfg->dry_run)) {
+        printf("Local Python runtime setup failed: %s\n", rt.error);
+        return 2;
+    }
+    cs_strlcpy(cfg->minimind_dir, rt.minimind, sizeof(cfg->minimind_dir));
+    if (!cfg->out_dir[0]) {
+        make_abs(rt.training, cfg->out_dir, sizeof(cfg->out_dir));
+    }
 
     char train_script[CS_PATH_MAX], siglip[CS_PATH_MAX], base_path[CS_PATH_MAX];
     cs_path_join(train_script, sizeof(train_script), cfg->minimind_dir,
@@ -451,12 +508,8 @@ int train_run(TrainConfig *cfg)
     cs_path_join(prepare, sizeof(prepare), scripts, "prepare_minimind_dataset.py");
 
     char python[CS_PATH_MAX];
-    if (!proc_find_in_path("python3", python, sizeof(python)) &&
-        !proc_find_in_path("python", python, sizeof(python))) {
-        printf("Python 3 was not found in PATH.\n");
-        return 2;
-    }
-    printf("Python:   %s\n\n", python);
+    cs_strlcpy(python, rt.python, sizeof(python));
+    printf("Python:   %s (private venv)\n\n", python);
 
     char manifest[CS_PATH_MAX], prompt_path[CS_PATH_MAX];
     int rows = 0, images = 0;
