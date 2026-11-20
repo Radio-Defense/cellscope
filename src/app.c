@@ -1934,9 +1934,11 @@ static int SDLCALL cellscope_vlm_thread(void *data)
 
         bool have = false;
         bool candidate = false;
+        bool consensus_complete = false;
         int64_t frame_ts = 0;
         float frame_score = 0;
         SDL_LockMutex(app->mu);
+        consensus_complete = app->visibility.committed;
         if (mock) {
             have = true;
             candidate = true;
@@ -2041,10 +2043,11 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             continue;
         }
 
-        if (!mock && candidate) {
-            /* A DSP candidate is already screen evidence. Skip the separate
-             * presence call so frequency reads arrive close enough together
-             * to reach consensus while the meter is still in view. */
+        if (!mock && candidate && !consensus_complete) {
+            /* During the active attempt, a DSP candidate is already screen
+             * evidence. Skip the separate presence call so frequency reads
+             * arrive close enough together to reach consensus while the meter
+             * is still in view. */
             SDL_LockMutex(app->mu);
             if (!app->reader.screen_visible) {
                 app->reader.screen_visible = true;
@@ -2096,7 +2099,14 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 app->reader.raw[0] = '\0';
             }
             app->reader.busy = true;
-            if (!candidate) {
+            if (consensus_complete) {
+                app->reader.live_valid = false;
+                app->reader.live_hz = 0;
+                app->reader.live_raw[0] = '\0';
+                cs_strlcpy(app->reader.status,
+                           "Consensus recorded — move the screen away to start a new reading",
+                           sizeof(app->reader.status));
+            } else if (!candidate) {
                 app->reader.live_valid = false;
                 app->reader.live_hz = 0;
                 app->reader.live_raw[0] = '\0';
@@ -2105,7 +2115,7 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                            sizeof(app->reader.status));
             }
             SDL_UnlockMutex(app->mu);
-            if (!candidate) {
+            if (!candidate || consensus_complete) {
                 SDL_Delay(20);
                 continue;
             }
