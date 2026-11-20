@@ -1,5 +1,9 @@
 # CellScope
 
+CellScope was written to prove the use of directed energy on individuals,
+following the measurement study *The 2.5 GHz measurement* (report
+A-2026-11-19-R).
+
 A cross-platform desktop C application that watches an Android phone's cellular
 state and a webcam at the same time.
 
