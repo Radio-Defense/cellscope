@@ -1300,6 +1300,20 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     } else {
         app_log(app, "settings load failed: %s", settings_err);
     }
+    if (strcmp(app->settings.reader_backend, "hf") == 0 &&
+        app->settings.hf_model[0]) {
+        snprintf(app->reader.backend, sizeof(app->reader.backend), "HF · %s",
+                 app->settings.hf_model);
+        cs_strlcpy(app->reader.detail, app->settings.hf_model_path,
+                   sizeof(app->reader.detail));
+        app->reader.kind = VLM_BACKEND_LLAMA;
+        app->reader.is_vlm = true;
+        cs_strlcpy(app->reader.status, "Loading the local reader model…",
+                   sizeof(app->reader.status));
+    } else {
+        cs_strlcpy(app->reader.backend, "MiniMind · local", sizeof(app->reader.backend));
+        app->reader.kind = VLM_BACKEND_LLAMA;
+    }
     cs_strlcpy(app->local_reader_label, "MiniMind · local", sizeof(app->local_reader_label));
     cs_strlcpy(app->local_reader_model, "minimind-meter", sizeof(app->local_reader_model));
     app->wifi_salt = load_wifi_salt(app->capture_dir);
@@ -1897,6 +1911,11 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
         cs_strlcpy(app->minimind_url, url, sizeof(app->minimind_url));
         cs_strlcpy(app->local_reader_label, label, sizeof(app->local_reader_label));
         cs_strlcpy(app->local_reader_model, model_id, sizeof(app->local_reader_model));
+        cs_strlcpy(app->reader.backend, label, sizeof(app->reader.backend));
+        cs_strlcpy(app->reader.detail, detail, sizeof(app->reader.detail));
+        app->reader.kind = VLM_BACKEND_LLAMA;
+        app->reader.is_vlm = true;
+        cs_strlcpy(app->reader.status, "Local reader ready", sizeof(app->reader.status));
         SDL_UnlockMutex(app->mu);
         runtime_publish(app, false, true, false, true, RT_STAGE_READY, 100,
                         hf ? "Hugging Face reader ready" : "MiniMind reader ready", "", "",
