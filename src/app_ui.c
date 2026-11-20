@@ -586,71 +586,49 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                        "Space or the top play button resumes");
     }
 
-    /* Live per-frame reading shown on the webcam pane while the screen is
-     * visible. The right-top pane stays blank until a best frame is chosen. */
-    if (s->reader.screen_visible) {
-        float cw = CS_MIN(260.0f, p.w * 0.34f);
+    /* Live detection box. Consensus replaces the live value for the same
+     * three-second window and moves the green check into this box. */
+    bool consensus = s->reader.visible && s->reader.hz > 0;
+    if (s->reader.screen_visible || consensus) {
+        float cw = CS_MIN(276.0f, p.w * 0.36f);
         UiRect lr = ui_rect(p.x + p.w - cw - 12, p.y + p.h - 136, cw, 82);
         ui_round_rect(ui, lr, 9, UI_COLOR(4, 9, 12, 225));
-        ui_rect_outline(ui, lr, UI_COLOR(55, 92, 84, 220), 1);
+        ui_rect_outline(ui, lr, consensus ? UI_COLOR(55, 150, 112, 235)
+                                         : UI_COLOR(55, 92, 84, 220), 1);
         ui_text_font(ui, FONT_SEMIBOLD, lr.x + 12, lr.y + 9, 7.2f, UI_ACCENT,
-                     "LIVE FRAME READ");
-        if (s->reader.live_valid && s->reader.live_hz > 0) {
+                     "LIVE DETECTION");
+        if (consensus) {
+            float cx = lr.x + lr.w - 17;
+            float cy = lr.y + 15;
+            UiColor check = UI_COLOR(95, 245, 170, 255);
+            ui_line(ui, cx - 7.0f, cy, cx - 2.0f, cy + 5.0f, check, 2.6f);
+            ui_line(ui, cx - 2.0f, cy + 5.0f, cx + 7.5f, cy - 6.0f, check, 2.6f);
+        }
+        if (consensus) {
+            char eng[64];
+            cs_format_eng((uint64_t)(s->reader.hz + 0.5), eng, sizeof(eng));
+            ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f, UI_TEXT,
+                             lr.w - 24, eng);
+            char sub[96];
+            snprintf(sub, sizeof(sub), "CONSENSUS REACHED · CONF %d%%",
+                     (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0));
+            ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_ACCENT,
+                             lr.w - 24, sub);
+        } else if (s->reader.live_valid && s->reader.live_hz > 0) {
             char eng[64];
             cs_format_eng((uint64_t)(s->reader.live_hz + 0.5), eng, sizeof(eng));
             ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f, UI_TEXT,
                              lr.w - 24, eng);
-            char sub[64];
-            snprintf(sub, sizeof(sub), "CONF %d%% · collecting best",
+            char sub[96];
+            snprintf(sub, sizeof(sub), "LIVE · CONF %d%% · collecting best",
                      (int)(s->reader.live_confidence * 100.0));
-            ui_text_font(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_FAINT, sub);
+            ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_FAINT,
+                             lr.w - 24, sub);
         } else {
             ui_text_font(ui, FONT_MONO, lr.x + 12, lr.y + 26, 20.0f, UI_FAINT, "—");
             ui_text_font(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_FAINT,
                          "screen visible · reading next frame");
         }
-    }
-
-    /* Consensus confirmation, rendered in the control layer over the feed. */
-    if (s->reader.visible && s->reader.hz > 0) {
-        float cx = p.x + p.w - 38;
-        float cy = p.y + 58;
-        ui_circle(ui, cx, cy, 21, UI_COLOR(4, 10, 8, 215));
-        ui_circle(ui, cx, cy, 18, UI_COLOR(20, 62, 47, 235));
-        ui_circle(ui, cx, cy, 16.5f, UI_COLOR(8, 20, 16, 245));
-        UiColor check = UI_COLOR(95, 245, 170, 255);
-        ui_line(ui, cx - 8.5f, cy - 0.5f, cx - 2.5f, cy + 6.0f, check, 3.2f);
-        ui_line(ui, cx - 2.5f, cy + 6.0f, cx + 9.5f, cy - 7.5f, check, 3.2f);
-    }
-
-    /* Consensus result is displayed in the webcam pane for three seconds. */
-    if (s->reader.visible && s->reader.hz > 0) {
-        float cw = CS_MIN(430.0f, p.w - 32);
-        UiRect br = ui_rect(p.x + (p.w - cw) / 2, p.y + 58, cw, 116);
-        ui_round_rect(ui, br, 10, UI_COLOR(4, 10, 13, 232));
-        ui_rect_outline(ui, br, UI_COLOR(55, 110, 95, 235), 1);
-        ui_text_font(ui, FONT_SEMIBOLD, br.x + 14, br.y + 9, 7.6f, UI_ACCENT,
-                     "CONSENSUS RESULT · 3 SECONDS");
-        char eng[64];
-        cs_format_eng((uint64_t)(s->reader.hz + 0.5), eng, sizeof(eng));
-        char *sp = strrchr(eng, ' ');
-        char unit[16] = "";
-        if (sp) {
-            cs_strlcpy(unit, sp + 1, sizeof(unit));
-            *sp = '\0';
-        }
-        float size = CS_MIN(31.0f, cw / 6.4f);
-        float nw = ui_text_width(ui, FONT_MONO, size, eng);
-        ui_text_font(ui, FONT_MONO, br.x + 14, br.y + 24, size, UI_ACCENT, eng);
-        ui_text_font(ui, FONT_MEDIUM, br.x + 20 + nw, br.y + 24 + size * 0.55f, 10.0f,
-                     UI_MUTED, unit);
-        char hz[64];
-        cs_format_hz((uint64_t)(s->reader.hz + 0.5), hz, sizeof(hz));
-        ui_text_font(ui, FONT_MONO, br.x + 14, br.y + 74, 10.0f, UI_MUTED, hz);
-        char conf[64];
-        snprintf(conf, sizeof(conf), "CONF %d%%",
-                 (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0));
-        ui_text_right(ui, FONT_MONO, br.x + br.w - 14, br.y + 78, 8.4f, UI_FAINT, conf);
     }
 
     /* Reader status, confidence, backend and raw answer live in the webcam

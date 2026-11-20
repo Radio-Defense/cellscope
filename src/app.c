@@ -941,7 +941,7 @@ static void readme_fixture_seed(App *app)
         cs_strlcpy(app->reader.status, "Screen left · consensus recorded",
                    sizeof(app->reader.status));
     else
-        cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz · 8 candidates",
+        cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz · 6 candidates",
                    sizeof(app->reader.status));
     app->cell_follow = true;
     app->meter_follow = true;
