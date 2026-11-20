@@ -74,6 +74,16 @@ static void visibility_reset_locked(App *app)
     for (int i = 0; i < v->frame_count; i++) free(v->frames[i].rgb);
     free(v->frames);
     memset(v, 0, sizeof(*v));
+    /* A new visibility event must not reuse candidates captured while the
+     * previous meter screen was present. Otherwise a stale frame can win the
+     * new consensus and duplicate the previous frequency. */
+    for (int i = 0; i < BURST_MAX; i++) {
+        free(app->burst[i].rgb);
+        memset(&app->burst[i], 0, sizeof(app->burst[i]));
+    }
+    app->burst_count = 0;
+    app->burst_next = 0;
+    app->reader.burst_count = 0;
 }
 
 static double visibility_tolerance(double hz)
