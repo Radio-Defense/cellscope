@@ -324,6 +324,36 @@ bool adb_check(const char *adb_path, AdbStatus *st)
     return false;
 }
 
+bool adb_wifi_scan(const char *adb_path, const char *serial, char *out, size_t cap,
+                   char *err, size_t err_cap)
+{
+    if (out && cap) out[0] = '\0';
+    if (err && err_cap) err[0] = '\0';
+    if (!adb_path || !*adb_path || !serial || !*serial) return false;
+    const char *argv[] = {adb_path, "-s", serial, "shell", "cmd", "wifi",
+                          "list-scan-results", NULL};
+    int code = -1;
+    bool timed_out = false;
+    bool ran = proc_run(argv, out, cap, 3000, &code, &timed_out, err, err_cap);
+    if (!ran || timed_out) return false;
+    adb_strip_crlf(out);
+    if (code != 0 && !out[0]) return false;
+    return true;
+}
+
+bool adb_wifi_start_scan(const char *adb_path, const char *serial)
+{
+    if (!adb_path || !*adb_path || !serial || !*serial) return false;
+    const char *argv[] = {adb_path, "-s", serial, "shell", "cmd", "wifi", "start-scan",
+                          NULL};
+    char out[512], err[256];
+    int code = -1;
+    bool timed_out = false;
+    if (!proc_run(argv, out, sizeof(out), 3000, &code, &timed_out, err, sizeof(err)))
+        return false;
+    return !timed_out && code == 0;
+}
+
 bool adb_poll_dumpsys(const char *adb_path, const char *serial, char *out, size_t cap,
                       char *err, size_t err_cap)
 {

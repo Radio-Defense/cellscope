@@ -26,6 +26,7 @@ add_library(cellcore STATIC
   src/telephony.c
   src/meter.c
   src/quality.c
+  src/wifi.c
 )
 target_include_directories(cellcore PUBLIC src)
 target_compile_definitions(cellcore PUBLIC

@@ -44,6 +44,11 @@ bool adb_check(const char *adb_path, AdbStatus *st);
 bool adb_poll_dumpsys(const char *adb_path, const char *serial, char *out, size_t cap,
                       char *err, size_t err_cap);
 
+/* `cmd wifi list-scan-results`; requires Android 11+ and Wi-Fi/location enabled. */
+bool adb_wifi_scan(const char *adb_path, const char *serial, char *out, size_t cap,
+                   char *err, size_t err_cap);
+bool adb_wifi_start_scan(const char *adb_path, const char *serial);
+
 void adb_strip_crlf(char *s);
 
 #endif

@@ -125,6 +125,7 @@ typedef struct App {
     bool prefer_minimind;
     bool vlm_switched;
     bool runtime_toasted;
+    uint64_t wifi_salt;
     char minimind_url[128];
     int ui_banner_h;
     uint8_t *img_rgb;

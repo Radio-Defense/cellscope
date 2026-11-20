@@ -5,7 +5,8 @@ state and a webcam at the same time.
 
 - **Left:** live cell samples polled from `adb` once per second (PLMN, MCC/MNC,
   TAC, eNB/CID, PCI, timing advance, NR/LTE ARFCN, band, bandwidth, CA,
-  downlink/uplink centre frequencies).
+  downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
+  and their RSSI in dBm.
 - **Top left:** webcam preview with a meter alignment guide.
 - **Top right:** best-frame frequency reader. It captures a rolling burst of
   frames, scores them for legibility, and sends the sharpest frame to a local
@@ -31,7 +32,7 @@ releases and ModelScope.
 | Language | C11 |
 | Window / input / camera | SDL3 (3.2+ camera API) |
 | 2D UI / text | SDL3 renderer + FreeType, small immediate-mode toolkit |
-| ADB | `adb` subprocess, captured with a hard timeout |
+| ADB | `adb` subprocess, captured with a hard timeout; telephony + Wi-Fi scans |
 | Reader HTTP | libcurl → Ollama or llama.cpp server (OpenAI-compatible) |
 | OCR fallback | Tesseract subprocess |
 | PNG | stb_image / stb_image_write |
@@ -235,6 +236,28 @@ some devices redact NR fields unless a debug/test menu is enabled. Missing
 values are shown as `—`, and the raw dump of the last parse failure is written
 to the capture directory for diagnosis.
 
+#### Wi-Fi column
+
+Each cell sample also carries the Wi-Fi scan visible at transfer time:
+
+- `adb shell cmd wifi start-scan` is requested at most every 10 seconds;
+- `adb shell cmd wifi list-scan-results` is read for every sample;
+- duplicate BSSIDs for the same SSID are merged, keeping the strongest RSSI;
+- SSIDs are never shown or exported. Each SSID is hashed with a random
+  per-install salt stored at
+  `~/Library/Application Support/CellScope/wifi_salt.txt` (or the equivalent
+  app-data directory; if that location is not writable, `.wifi_salt` in the
+  capture directory), producing a stable numeric ID;
+- the full value is stored as a semicolon-delimited string:
+  `1847293012:-42;99812345:-67;...` = `id:rssi_dbm` pairs, strongest first;
+- the UI shows the three strongest entries plus a `+N` count; the CSV `wifi`
+  column contains the complete string.
+
+`cmd wifi` needs Android 11+ and normally needs Wi-Fi and location services
+enabled. If the command is unavailable or returns no results, the column shows
+`—`; no SSID is written to disk in that case. The RSSI is Android's reported
+received signal strength, not the AP's configured transmit power.
+
 ### Controls
 
 | Key | Action |
@@ -429,8 +452,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 The test suite covers PLMN splitting, LTE/NR ARFCN conversions, a realistic
-telephony dump, meter units/commas/JSON, stability/debouncing, frame-quality
-ordering, JSON helpers, base64, and frequency formatting.
+telephony dump, Wi-Fi scan parsing/anonymisation/deduplication, meter
+units/commas/JSON, stability/debouncing, frame-quality ordering, JSON helpers,
+base64, and frequency formatting.
 
 A camera-free end-to-end reader test:
 
@@ -463,7 +487,10 @@ CELLSCOPE_SKIP_MODELS=1 \
   Unknown bands are shown as `—` rather than guessed.
 - The Tesseract fallback is not a VLM and is more sensitive to glare/angle.
   Prefer Ollama or llama.cpp for production.
-- Lists are in memory. Use **Export CSV** to persist.
+- Lists are in memory. Use **Export CSV** to persist; the CSV includes the full
+  anonymized `wifi` semicolon string.
+- The Wi-Fi column uses Android's cached scan results. If Wi-Fi/location is off
+  or the OEM blocks `cmd wifi`, the column remains empty.
 - First-run setup needs network and enough disk for PyTorch plus MiniMind
   assets (several GB, especially on Linux CUDA wheels). The banner shows
   progress; deleting the runtime directory forces a clean retry.

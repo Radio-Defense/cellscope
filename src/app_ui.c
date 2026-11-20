@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define strtok_r strtok_s
+#endif
+
 typedef struct {
     AdbStatus adb;
     ReaderView reader;
@@ -491,6 +495,28 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
     }
 }
 
+
+static int wifi_entries(const char *text, uint32_t *ids, int *rssi, int max)
+{
+    if (!text || !*text) return 0;
+    char buf[768];
+    cs_strlcpy(buf, text, sizeof(buf));
+    int total = 0;
+    char *save = NULL;
+    for (char *p = strtok_r(buf, ";", &save); p; p = strtok_r(NULL, ";", &save)) {
+        unsigned id = 0;
+        int dbm = 0;
+        if (sscanf(p, "%u:%d", &id, &dbm) == 2) {
+            if (total < max) {
+                ids[total] = id;
+                rssi[total] = dbm;
+            }
+            total++;
+        }
+    }
+    return total;
+}
+
 static void draw_cell_rows(App *app, UiState *s, UiRect body)
 {
     Ui *ui = &app->ui;
@@ -538,6 +564,11 @@ static void draw_cell_rows(App *app, UiState *s, UiRect body)
         else if (i % 2 == 0) ui_round_rect(ui, row, 7, UI_COLOR(14, 21, 28, 110));
         if (newest) ui_round_rect(ui, ui_rect(row.x, row.y + 8, 2, row.h - 16), 1, UI_ACCENT);
 
+        const float wifi_w = 148.0f;
+        float wifi_x = row.x + row.w - wifi_w;
+        ui_line(ui, wifi_x - 8, row.y + 5, wifi_x - 8, row.y + row.h - 5,
+                UI_BORDER_SOFT, 1);
+
         char time[24];
         cs_format_time(c.ts_ms, time, sizeof(time));
         ui_text_font(ui, FONT_MONO, row.x + 10, row.y + 6, 10.4f,
@@ -569,20 +600,45 @@ static void draw_cell_rows(App *app, UiState *s, UiRect body)
                  c.cid[0] ? c.cid : "—");
         ui_text_font(ui, FONT_MONO, row.x + 180, row.y + 24, 9.4f, UI_MUTED, l2);
         snprintf(l2, sizeof(l2), "PCI %s", c.pci[0] ? c.pci : "—");
-        ui_text_font(ui, FONT_MONO, row.x + 322, row.y + 24, 9.4f, UI_MUTED, l2);
+        ui_text_font(ui, FONT_MONO, row.x + 300, row.y + 24, 9.4f, UI_MUTED, l2);
         snprintf(l2, sizeof(l2), "TA %s", c.ta[0] ? c.ta : "—");
-        ui_text_font(ui, FONT_MONO, row.x + 442, row.y + 24, 9.4f, UI_MUTED, l2);
+        ui_text_font(ui, FONT_MONO, row.x + 405, row.y + 24, 9.4f, UI_MUTED, l2);
 
         char l3[300];
         snprintf(l3, sizeof(l3), "ARFCN %s · %s · BW %s", c.arfcn[0] ? c.arfcn : "—",
                  c.band[0] ? c.band : "—", c.bw[0] ? c.bw : "—");
-        ui_text_ellipsis(ui, FONT_MONO, row.x + 10, row.y + 39, 9.2f, UI_COLOR(105, 124, 140, 255),
-                         row.w * 0.47f, l3);
+        ui_text_ellipsis(ui, FONT_MONO, row.x + 10, row.y + 39, 9.2f,
+                         UI_COLOR(105, 124, 140, 255), (wifi_x - row.x) * 0.52f, l3);
         char lf[200];
         snprintf(lf, sizeof(lf), "DL %s · UL %s MHz", c.f_dl[0] ? c.f_dl : "—",
                  c.f_ul[0] ? c.f_ul : "—");
-        ui_text_right(ui, FONT_MONO, row.x + row.w - 10, row.y + 39, 9.2f,
+        ui_text_right(ui, FONT_MONO, wifi_x - 12, row.y + 39, 9.2f,
                       UI_COLOR(140, 165, 185, 255), lf);
+
+        uint32_t wids[4];
+        int wrssi[4];
+        int wn = wifi_entries(c.wifi, wids, wrssi, 4);
+        ui_text_font(ui, FONT_SEMIBOLD, wifi_x, row.y + 4, 7.2f, UI_FAINT, "WIFI · dBm");
+        if (wn > 3) {
+            char more[24];
+            snprintf(more, sizeof(more), "+%d", wn - 3);
+            ui_text_right(ui, FONT_MONO, row.x + row.w - 8, row.y + 4, 7.2f, UI_FAINT,
+                          more);
+        }
+        if (wn == 0) {
+            ui_text_font(ui, FONT_MONO, wifi_x, row.y + 20, 8.2f, UI_FAINT, "—");
+        } else {
+            for (int wi = 0; wi < wn && wi < 3; wi++) {
+                char ap[48];
+                snprintf(ap, sizeof(ap), "#%u", wids[wi]);
+                ui_text_font(ui, FONT_MONO, wifi_x, row.y + 17 + wi * 11, 7.7f,
+                             UI_COLOR(150, 170, 190, 255), ap);
+                char dbm[24];
+                snprintf(dbm, sizeof(dbm), "%d", wrssi[wi]);
+                ui_text_right(ui, FONT_MONO, row.x + row.w - 8, row.y + 17 + wi * 11,
+                              7.7f, wrssi[wi] >= -60 ? UI_ACCENT : UI_FAINT, dbm);
+            }
+        }
     }
     ui_pop_clip(ui);
     ui_scrollbar(ui, ui_rect(body.x + body.w - 3, body.y + 2, 3, body.h - 4), app->cell_scroll,

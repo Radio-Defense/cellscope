@@ -8,6 +8,7 @@
 #include "quality.h"
 #include "telephony.h"
 #include "util.h"
+#include "wifi.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -190,6 +191,32 @@ static void test_quality(void)
     free(img);
 }
 
+static void test_wifi(void)
+{
+    const char *scan =
+        "BSSID Frequency RSSI Age(sec) SSID Flags\n"
+        "48:5f:08:ed:f7:f1 5200 -68 10.1 synwcs_5G [WPA2-PSK-CCMP][ESS]\n"
+        "34:f7:16:92:87:6c 2442 -38 10.1 syrj [WPA-PSK-CCMP][ESS]\n"
+        "de:00:1a:bc:b3:4a 2422 -57 10.1 IFLYHub 86 7849 [WPA2-PSK-CCMP][ESS]\n"
+        "34:f7:16:92:87:6d 2442 -30 1.0 syrj [WPA2-PSK-CCMP][ESS]\n";
+    WifiAp aps[8];
+    int n = wifi_parse_scan(scan, 12345, aps, 8);
+    CHECK(n == 3, "wifi unique count %d", n);
+    CHECK(aps[0].rssi == -30, "strongest first: %d", aps[0].rssi);
+    CHECK(aps[2].rssi == -68, "weakest last: %d", aps[2].rssi);
+    CHECK(aps[0].id != aps[1].id && aps[1].id != aps[2].id, "unique ids");
+    CHECK(aps[0].id == wifi_anonymize("syrj", 12345), "duplicate SSID merged");
+    char s[256];
+    wifi_format(aps, n, s, sizeof(s));
+    CHECK(strchr(s, ';') != NULL, "semicolon format: %s", s);
+    CHECK(wifi_anonymize("syrj", 12345) == wifi_anonymize("syrj", 12345),
+          "stable anonymisation");
+    CHECK(wifi_anonymize("syrj", 12345) != wifi_anonymize("syrj", 54321),
+          "salt changes id");
+    const char *no_result = "No scan results\n";
+    CHECK(wifi_parse_scan(no_result, 1, aps, 8) == 0, "no results");
+}
+
 static void test_util(void)
 {
     char out[64];
@@ -217,6 +244,7 @@ int main(void)
     test_telephony();
     test_meter();
     test_quality();
+    test_wifi();
     test_util();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

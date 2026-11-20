@@ -7,6 +7,7 @@
 
 #include "stb_image.h"
 #include "stb_image_write.h"
+#include "wifi.h"
 
 static void app_log(App *app, const char *fmt, ...);
 static int SDLCALL cellscope_adb_thread(void *data);
@@ -406,7 +407,50 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
     return APP_ARGS_OK;
 }
 
-static CellSample make_demo_cell(int64_t ts, int seq)
+
+static uint64_t random_u64(void)
+{
+    uint64_t v = 0;
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        if (fread(&v, 1, sizeof(v), f) != sizeof(v)) v = 0;
+        fclose(f);
+    }
+    if (!v) v = (uint64_t)cs_epoch_ms() ^ ((uint64_t)(uintptr_t)&v << 17) ^ 0x9e3779b97f4a7c15ULL;
+    return v;
+}
+
+static uint64_t load_wifi_salt(const char *capture_dir)
+{
+    char dirs[2][CS_PATH_MAX];
+    int ndirs = 0;
+    char appdata[CS_PATH_MAX];
+    if (cs_app_data_dir(appdata, sizeof(appdata))) {
+        cs_mkdirs(appdata);
+        cs_strlcpy(dirs[ndirs++], appdata, sizeof(dirs[0]));
+    }
+    if (capture_dir && *capture_dir) {
+        cs_strlcpy(dirs[ndirs++], capture_dir, sizeof(dirs[0]));
+    }
+    uint64_t v = random_u64();
+    char hex[32];
+    snprintf(hex, sizeof(hex), "%016llx\n", (unsigned long long)v);
+    for (int i = 0; i < ndirs; i++) {
+        char path[CS_PATH_MAX];
+        cs_path_join(path, sizeof(path), dirs[i], ".wifi_salt");
+        uint8_t *data = NULL;
+        size_t len = 0;
+        if (cs_read_file(path, &data, &len) && len > 0) {
+            uint64_t parsed = strtoull((char *)data, NULL, 16);
+            free(data);
+            if (parsed) return parsed;
+        }
+        if (cs_write_file(path, hex, strlen(hex))) return v;
+    }
+    return v;
+}
+
+static CellSample make_demo_cell(int64_t ts, int seq, uint64_t salt)
 {
     CellSample s;
     memset(&s, 0, sizeof(s));
@@ -428,6 +472,14 @@ static CellSample make_demo_cell(int64_t ts, int seq)
     s.ca = true;
     cs_strlcpy(s.f_dl, "2160.2 / 940.0", sizeof(s.f_dl));
     cs_strlcpy(s.f_ul, "1970.2 / 895.0", sizeof(s.f_ul));
+    WifiAp aps[3];
+    aps[0].id = wifi_anonymize("cellscope-demo-home", salt);
+    aps[0].rssi = -42;
+    aps[1].id = wifi_anonymize("cellscope-demo-neighbour", salt);
+    aps[1].rssi = -67;
+    aps[2].id = wifi_anonymize("cellscope-demo-cafe", salt);
+    aps[2].rssi = -81;
+    wifi_format(aps, 3, s.wifi, sizeof(s.wifi));
     s.demo = true;
     cs_strlcpy(s.source, seq % 7 == 0 ? "Pixel 8 · demo" : "Pixel 8",
                sizeof(s.source));
@@ -439,7 +491,7 @@ void app_seed_demo(App *app)
     int64_t now = cs_epoch_ms();
     SDL_LockMutex(app->mu);
     for (int i = 11; i >= 0; i--) {
-        CellSample s = make_demo_cell(now - (int64_t)i * 1000, 11 - i);
+        CellSample s = make_demo_cell(now - (int64_t)i * 1000, 11 - i, app->wifi_salt);
         cell_push_locked(app, &s);
     }
     for (int i = 4; i >= 0; i--) {
@@ -477,6 +529,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     app->win = win;
     app->ren = ren;
     app->started_ms = cs_now_ms();
+    app->wifi_salt = load_wifi_salt(app->capture_dir);
     app->selected_meter = -1;
     app->cell_follow = true;
     app->meter_follow = true;
@@ -892,7 +945,7 @@ void app_retry_runtime(App *app)
 
 static void demo_publish_cell(App *app)
 {
-    CellSample s = make_demo_cell(cs_epoch_ms(), app->cell_count);
+    CellSample s = make_demo_cell(cs_epoch_ms(), app->cell_count, app->wifi_salt);
     SDL_LockMutex(app->mu);
     cell_push_locked(app, &s);
     app->adb.state = ADB_STATE_CONNECTED;
@@ -913,6 +966,7 @@ static int SDLCALL cellscope_adb_thread(void *data)
     char *dumpsys = malloc(ADB_DUMPSYS_MAX);
     if (!dumpsys) return 1;
     int64_t last_poll = 0;
+    int64_t last_wifi_scan = 0;
     AdbState last_state = ADB_STATE_UNKNOWN;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
@@ -986,6 +1040,19 @@ static int SDLCALL cellscope_adb_thread(void *data)
             if (telephony_parse(dumpsys, &raw)) {
                 CellSample s;
                 telephony_to_sample(&raw, &s);
+                char wifi_out[32768], wifi_err[256];
+                int wifi_n = 0;
+                WifiAp aps[32];
+                if (now - last_wifi_scan > 10000) {
+                    adb_wifi_start_scan(path, serial);
+                    last_wifi_scan = now;
+                }
+                if (adb_wifi_scan(path, serial, wifi_out, sizeof(wifi_out), wifi_err,
+                                  sizeof(wifi_err))) {
+                    wifi_n = wifi_parse_scan(wifi_out, app->wifi_salt, aps, 32);
+                }
+                wifi_format(aps, wifi_n, s.wifi, sizeof(s.wifi));
+                s.ts_ms = cs_epoch_ms();
                 cs_strlcpy(s.source, st.model[0] ? st.model : serial, sizeof(s.source));
                 SDL_LockMutex(app->mu);
                 cell_push_locked(app, &s);
@@ -1311,15 +1378,19 @@ void app_copy_diagnostics(App *app)
     char text[4096];
     AdbStatus st;
     ReaderView rv;
+    RuntimeView rt;
     SDL_LockMutex(app->mu);
     st = app->adb;
     rv = app->reader;
+    rt = app->runtime_view;
     SDL_UnlockMutex(app->mu);
     snprintf(text, sizeof(text),
              "CellScope diagnostics\nadb: %s\nstate: %d\ndetail: %s\nhint: %s\nserial: %s "
-             "model: %s\nreader: %s\nreader status: %s\nreader error: %s\nraw adb:\n%s\n",
+             "model: %s\nreader: %s\nreader status: %s\nreader error: %s\n"
+             "runtime: %d%% %s\nruntime error: %s\nraw adb:\n%s\n",
              st.adb_path, (int)st.state, st.detail, st.hint, st.serial, st.model,
-             rv.backend, rv.status, rv.error, st.raw);
+             rv.backend, rv.status, rv.error, rt.percent, rt.message, rt.error_text,
+             st.raw);
     SDL_SetClipboardText(text);
     app_notify(app, false, "Diagnostics copied to the clipboard.");
 }
@@ -1370,7 +1441,7 @@ void app_export_csv(App *app)
     FILE *fc = fopen(cells_path, "w");
     if (fc) {
         fputs("timestamp_unix_ms,plmn,mcc,mnc,operator,country,tac,rat,enb,cid,pci,ta,arfcn,"
-              "band,bw,ca,f_dl_mhz,f_ul_mhz,source\n",
+              "band,bw,ca,f_dl_mhz,f_ul_mhz,wifi,source\n",
               fc);
         for (int i = 0; i < app->cell_count; i++) {
             const CellSample *c = &app->cells[(app->cell_head + i) % CELL_MAX];
@@ -1406,6 +1477,8 @@ void app_export_csv(App *app)
             csv_escape(fc, c->f_dl);
             fputc(',', fc);
             csv_escape(fc, c->f_ul);
+            fputc(',', fc);
+            csv_escape(fc, c->wifi);
             fputc(',', fc);
             csv_escape(fc, c->source);
             fputc('\n', fc);

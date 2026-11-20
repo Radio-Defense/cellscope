@@ -25,6 +25,7 @@ typedef struct {
     bool ca;
     char f_dl[32];
     char f_ul[32];
+    char wifi[768];
     bool demo;
     char source[64];
 } CellSample;
