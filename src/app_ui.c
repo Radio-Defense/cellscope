@@ -331,9 +331,10 @@ static void draw_guide(Ui *ui, UiRect preview, const UiState *s)
     ui_line(ui, g.x, g.y + g.h, g.x, g.y + g.h - len, col, th);
     ui_line(ui, g.x + g.w, g.y + g.h, g.x + g.w - len, g.y + g.h, col, th);
     ui_line(ui, g.x + g.w, g.y + g.h, g.x + g.w, g.y + g.h - len, col, th);
-    ui_text_center(ui, FONT_SEMIBOLD, g.x + g.w / 2, g.y + g.h + 8, 8.5f,
-                   UI_COLOR(180, 220, 205, 175),
-                   "HOLD THE METER SCREEN IN THE GUIDE · MOVE CLOSER IF SMALL");
+    if (!s->paused)
+        ui_text_center(ui, FONT_SEMIBOLD, g.x + g.w / 2, g.y + g.h + 8, 8.5f,
+                       UI_COLOR(180, 220, 205, 175),
+                       "HOLD THE METER SCREEN IN THE GUIDE · MOVE CLOSER IF SMALL");
 }
 
 static void draw_demo_feed(App *app, UiRect preview)
@@ -422,7 +423,8 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
     Ui *ui = &app->ui;
     ui_panel(ui, r, UI_PANEL);
     ui_text_font(ui, FONT_SEMIBOLD, r.x + 16, r.y + 13, 9.2f, UI_MUTED, "WEBCAM");
-    const char *cname = app->demo ? "Synthetic bench meter"
+    const char *cname = s->paused ? "Paused"
+                        : app->demo ? "Synthetic bench meter"
                         : app->image_mode ? "Test image"
                         : app->camera_ok ? app->cam.name
                                          : "Unavailable";
@@ -480,10 +482,7 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         const char *title = "No camera";
         const char *sub = app->camera_error[0] ? app->camera_error
                                                : camera_platform_hint();
-        if (app->paused) {
-            title = "Capture paused";
-            sub = "Press play to start the webcam, ADB polling and meter extraction.";
-        } else if (pending) {
+        if (pending) {
             title = "Camera permission required";
             sub = "A system camera permission dialog should be open. If it is not "
                   "visible, use Camera settings below.";
@@ -493,56 +492,62 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         } else if (!app->camera_ok) {
             title = "Camera unavailable";
         }
-        ui_text_center(ui, FONT_SEMIBOLD, p.x + p.w / 2, p.y + p.h / 2 - 30, 15, UI_MUTED,
-                       title);
-        ui_text_wrapped(ui, p.x + p.w * 0.14f, p.y + p.h / 2 - 8, p.w * 0.72f, 9.6f,
-                        UI_FAINT, 4, sub);
-        float button_y = p.y + p.h / 2 + 56;
-        bool show_settings = camera_platform_can_open_settings() && !app->paused;
-        bool show_relaunch = camera_platform_can_relaunch() && (pending || denied);
-        float bw_retry = 104, bw_settings = 112, bw_relaunch = 108, bgap = 8;
-        float total = bw_retry + (show_settings ? bw_settings + bgap : 0) +
-                      (show_relaunch ? bw_relaunch + bgap : 0);
-        float bx = p.x + p.w / 2 - total / 2;
-        UiRect retry = ui_rect(bx, button_y, bw_retry, 30);
-        if (!app->paused && ui_button(ui, retry, "Retry camera", BUTTON_SECONDARY, true))
-            app_retry_camera(app, true);
-        bx += bw_retry + bgap;
-        if (show_settings) {
-            UiRect settings_cam = ui_rect(bx, button_y, bw_settings, 30);
-            if (ui_button(ui, settings_cam, "Camera settings", BUTTON_SECONDARY, true)) {
-                if (!camera_platform_open_settings())
-                    app_notify(app, true, "Could not open the camera settings page.");
+        if (!app->paused) {
+            ui_text_center(ui, FONT_SEMIBOLD, p.x + p.w / 2, p.y + p.h / 2 - 30, 15,
+                           UI_MUTED, title);
+            ui_text_wrapped(ui, p.x + p.w * 0.14f, p.y + p.h / 2 - 8, p.w * 0.72f, 9.6f,
+                            UI_FAINT, 4, sub);
+            float button_y = p.y + p.h / 2 + 56;
+            bool show_settings = camera_platform_can_open_settings();
+            bool show_relaunch = camera_platform_can_relaunch() && (pending || denied);
+            float bw_retry = 104, bw_settings = 112, bw_relaunch = 108, bgap = 8;
+            float total = bw_retry + (show_settings ? bw_settings + bgap : 0) +
+                          (show_relaunch ? bw_relaunch + bgap : 0);
+            float bx = p.x + p.w / 2 - total / 2;
+            UiRect retry = ui_rect(bx, button_y, bw_retry, 30);
+            if (ui_button(ui, retry, "Retry camera", BUTTON_SECONDARY, true))
+                app_retry_camera(app, true);
+            bx += bw_retry + bgap;
+            if (show_settings) {
+                UiRect settings_cam = ui_rect(bx, button_y, bw_settings, 30);
+                if (ui_button(ui, settings_cam, "Camera settings", BUTTON_SECONDARY, true)) {
+                    if (!camera_platform_open_settings())
+                        app_notify(app, true, "Could not open the camera settings page.");
+                }
+                bx += bw_settings + bgap;
             }
-            bx += bw_settings + bgap;
-        }
-        if (show_relaunch) {
-            UiRect relaunch = ui_rect(bx, button_y, bw_relaunch, 30);
-            if (ui_button(ui, relaunch, "Relaunch app", BUTTON_SECONDARY, true)) {
-                if (camera_platform_relaunch()) {
-                    SDL_SetAtomicInt(&app->quit, 1);
-                } else {
-                    app_notify(app, true, "Could not relaunch CellScope.app.");
+            if (show_relaunch) {
+                UiRect relaunch = ui_rect(bx, button_y, bw_relaunch, 30);
+                if (ui_button(ui, relaunch, "Relaunch app", BUTTON_SECONDARY, true)) {
+                    if (camera_platform_relaunch()) {
+                        SDL_SetAtomicInt(&app->quit, 1);
+                    } else {
+                        app_notify(app, true, "Could not relaunch CellScope.app.");
+                    }
                 }
             }
         }
     }
 
-    /* Overlay badges. */
+    /* Overlay badges. Paused rendering keeps the pane text centered only. */
+    if (!s->paused) {
     UiRect badge = ui_rect(p.x + 12, p.y + 12, 74, 20);
     ui_round_rect(ui, badge, 10, UI_COLOR(4, 8, 11, 210));
     bool camera_live = app->demo || app->image_mode ||
                        (app->camera_ok && app->cam.active);
-    UiColor bcol = app->demo ? UI_VIOLET
+    UiColor bcol = s->paused ? UI_AMBER
+                   : app->demo ? UI_VIOLET
                    : app->image_mode ? UI_BLUE
                    : camera_live ? UI_RED
                                  : UI_FAINT;
     draw_dot(ui, badge.x + 11, badge.y + 10, bcol);
-    const char *blabel = app->demo ? "DEMO"
+    const char *blabel = s->paused ? "PAUSED"
+                         : app->demo ? "DEMO"
                          : app->image_mode ? "IMAGE"
                          : camera_live ? "LIVE"
                                        : "OFFLINE";
     ui_text_font(ui, FONT_SEMIBOLD, badge.x + 19, badge.y + 4.5f, 8.2f, bcol, blabel);
+    }
     if (tw > 0) {
         char info[64];
         snprintf(info, sizeof(info), "%d × %d", tw, th);
@@ -554,13 +559,10 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
 
     if (s->paused) {
         ui_rect_fill(ui, p, UI_COLOR(4, 8, 11, 150));
-        float cx = p.x + p.w / 2, cy = p.y + p.h / 2;
-        ui_circle(ui, cx, cy - 4, 28, UI_AMBER);
-        ui_line(ui, cx - 4, cy - 18, cx + 8, cy - 4, UI_COLOR(10, 18, 22, 255), 4.0f);
-        ui_line(ui, cx + 8, cy - 4, cx - 4, cy + 10, UI_COLOR(10, 18, 22, 255), 4.0f);
-        ui_line(ui, cx - 4, cy + 10, cx - 4, cy - 18, UI_COLOR(10, 18, 22, 255), 4.0f);
-        ui_text_center(ui, FONT_SEMIBOLD, cx, cy + 38, 12, UI_TEXT, "PAUSED");
-        ui_text_center(ui, FONT_MONO, cx, cy + 56, 8.2f, UI_FAINT,
+        float cx = p.x + p.w / 2;
+        float cy = p.y + p.h / 2;
+        ui_text_center(ui, FONT_SEMIBOLD, cx, cy - 17, 13.0f, UI_TEXT, "PAUSED");
+        ui_text_center(ui, FONT_MONO, cx, cy + 9, 8.6f, UI_FAINT,
                        "Space or the top play button resumes");
     }
 
