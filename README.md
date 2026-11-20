@@ -335,11 +335,10 @@ timestamp. During the event:
   confidence and frame quality;
 - the cluster with the greatest aggregate weight wins; within it, the
   highest-quality frame is selected;
-- **as soon as a stable consensus is reached** (at least five readings, a
-  leader with four votes and 65% of the weight), the winning row is added to
-  the bottom-right table **immediately**, without waiting for pause or screen
-  loss. It contains the frame filename and the epoch timestamp when that webcam
-  frame appeared;
+- **as soon as a stable consensus is reached** (three unanimity/80%-weight
+  readings), the winning row is added to the bottom-right table
+  **immediately**, without waiting for pause or screen loss. It contains the
+  frame filename and the epoch timestamp when that webcam frame appeared;
 - the webcam overlay displays the winning value for **3 seconds**, then clears;
   capture continues until the screen leaves, but that visibility event is not
   recorded twice.

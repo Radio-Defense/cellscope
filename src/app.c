@@ -179,12 +179,16 @@ static int visibility_pick_locked(App *app, bool require_consensus, int *out_rea
     if (win < 0 || clusters[win].best < 0) return -1;
 
     if (require_consensus) {
-        if (readable_count < 5) return -1;
-        if (clusters[win].count < 4) return -1;
-        if (total_weight <= 0.0 || clusters[win].weight / total_weight < 0.65)
+        /* A short, clear look at the meter commonly yields only three VLM
+         * frames before the display moves. Require three unanimous readings
+         * so the row is committed in real time instead of waiting for the
+         * screen-loss fallback. */
+        if (readable_count < 3) return -1;
+        if (clusters[win].count < 3) return -1;
+        if (total_weight <= 0.0 || clusters[win].weight / total_weight < 0.80)
             return -1;
         if (second_weight > 0.0 &&
-            clusters[win].weight - second_weight < 0.25 * clusters[win].weight)
+            clusters[win].weight - second_weight < 0.20 * clusters[win].weight)
             return -1;
     }
     return clusters[win].best;
