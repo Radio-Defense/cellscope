@@ -337,15 +337,20 @@ frame is scored for:
 - blown highlights (glare)
 - crushed shadows
 
-The reader runs one combined presence+reading VLM request per second. Before
-that request, a DSP gate scores the frame's central guide region and only
-retains frames that are sharp, high-contrast, glare-free, well exposed and
-temporally stable. Bad frames are discarded immediately; only one "latest"
-frame is kept for the once-per-second presence check, so there is no all-frame
-archive. A visibility event starts when the VLM reports `visible:true` and ends
-when it reports `visible:false` (or when capture is paused/stopped). Every
-candidate frame with a readable extraction is temporarily retained in memory
-with its webcam capture timestamp. During the event:
+The reader runs a presence check once per second (a yes/no VLM question on a
+cropped guide image), then reads the frequency only from DSP-passing candidate
+frames. Before inference, a DSP gate scores the frame's central guide region
+and retains only frames that are sharp, high-contrast, glare-free, well exposed
+and temporally stable. Bad frames are discarded immediately; only one "latest"
+frame is kept for the presence check, so there is no all-frame archive. The
+guide image is cropped to the top 75% of the central guide ROI and scaled to
+640 px before the VLM, which removes most of the face/background.
+
+A visibility event starts when presence is detected and ends when the presence
+check says no (or capture is paused/stopped). Every candidate frame with a
+readable extraction is temporarily retained in memory with its webcam capture
+timestamp. Zero readings (`0`, `0.0 Hz`, CTCSS zeros) are never accepted as a
+frequency. During the event:
 
 - the **left-top live card** updates with every extracted reading;
 - the webcam reader overlay stays blank, showing “collecting”;

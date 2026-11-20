@@ -1632,7 +1632,9 @@ static int SDLCALL cellscope_vlm_thread(void *data)
 {
     App *app = data;
     uint8_t *rgb = NULL;
+    uint8_t *read_rgb = NULL;
     int rw = 0, rh = 0;
+    int read_w = 0, read_h = 0;
     int64_t last_scan_ms = 0;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
@@ -1754,15 +1756,32 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 }
             }
             app->reader.best_score = current_best;
-            if (best >= 0 && best_score >= 0.12f) {
-                BurstFrame *f = &app->burst[best];
-                size_t bytes = (size_t)f->w * f->h * 3;
+
+            /* Always retain a copy of the newest frame for the once-per-second
+             * presence check. */
+            if (app->latest_rgb && app->latest_w > 0 && app->latest_h > 0) {
+                size_t bytes = (size_t)app->latest_w * app->latest_h * 3;
                 uint8_t *copy = realloc(rgb, bytes);
                 if (copy) {
                     rgb = copy;
-                    memcpy(rgb, f->rgb, bytes);
-                    rw = f->w;
-                    rh = f->h;
+                    memcpy(rgb, app->latest_rgb, bytes);
+                    rw = app->latest_w;
+                    rh = app->latest_h;
+                    have = true;
+                }
+            }
+
+            /* Separately copy the best DSP-passing candidate for frequency
+             * extraction. */
+            if (best >= 0 && best_score >= 0.12f) {
+                BurstFrame *f = &app->burst[best];
+                size_t bytes = (size_t)f->w * f->h * 3;
+                uint8_t *copy = realloc(read_rgb, bytes);
+                if (copy) {
+                    read_rgb = copy;
+                    memcpy(read_rgb, f->rgb, bytes);
+                    read_w = f->w;
+                    read_h = f->h;
                     frame_ts = f->ts_ms;
                     frame_score = f->score;
                     f->used = true;
@@ -1773,22 +1792,14 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                     app->reader.frame_h = f->h;
                 }
             }
-            /* Once per second, also sample the newest frame for presence
-             * detection. It is not archived unless it passed the DSP gate. */
-            if (!have && app->latest_rgb && app->latest_w > 0 && app->latest_h > 0) {
-                size_t bytes = (size_t)app->latest_w * app->latest_h * 3;
+            if (!rgb && candidate) {
+                size_t bytes = (size_t)read_w * read_h * 3;
                 uint8_t *copy = realloc(rgb, bytes);
                 if (copy) {
                     rgb = copy;
-                    memcpy(rgb, app->latest_rgb, bytes);
-                    rw = app->latest_w;
-                    rh = app->latest_h;
-                    frame_ts = app->latest_ts_ms;
-                    frame_score = app->latest_quality.score;
-                    have = true;
-                    candidate = false;
-                    app->reader.frame_w = rw;
-                    app->reader.frame_h = rh;
+                    memcpy(rgb, read_rgb, bytes);
+                    rw = read_w;
+                    rh = read_h;
                 }
             }
             app->reader.burst_count = app->burst_count;
@@ -1826,11 +1837,66 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             continue;
         }
 
+        if (!mock) {
+            bool display_visible = false;
+            char derr[512] = {0};
+            if (!vlm_detect(&app->vlm, rgb, rw, rh, &display_visible, derr,
+                            sizeof(derr))) {
+                SDL_LockMutex(app->mu);
+                app->reader.busy = false;
+                app->reader.live_valid = false;
+                cs_strlcpy(app->reader.error, derr, sizeof(app->reader.error));
+                cs_strlcpy(app->reader.status, "Presence check failed — retrying",
+                           sizeof(app->reader.status));
+                SDL_UnlockMutex(app->mu);
+                SDL_Delay(120);
+                continue;
+            }
+            if (!display_visible) {
+                SDL_LockMutex(app->mu);
+                app->reader.busy = false;
+                app->reader.screen_visible = false;
+                app->reader.visible = false;
+                app->reader.live_valid = false;
+                app->reader.live_hz = 0;
+                app->reader.live_raw[0] = '\0';
+                visibility_commit_locked(app);
+                cs_strlcpy(app->reader.status, "No device screen visible — watching",
+                           sizeof(app->reader.status));
+                SDL_UnlockMutex(app->mu);
+                continue;
+            }
+            SDL_LockMutex(app->mu);
+            if (!app->reader.screen_visible) {
+                app->reader.screen_visible = true;
+                app->reader.visible = false;
+                app->reader.display_until_ms = 0;
+                app->reader.hz = 0;
+                app->reader.confidence = 0;
+                app->reader.raw[0] = '\0';
+            }
+            app->reader.busy = true;
+            if (!candidate) {
+                app->reader.live_valid = false;
+                app->reader.live_hz = 0;
+                app->reader.live_raw[0] = '\0';
+                cs_strlcpy(app->reader.status,
+                           "Screen visible — waiting for a readable candidate",
+                           sizeof(app->reader.status));
+            }
+            SDL_UnlockMutex(app->mu);
+            if (!candidate) {
+                SDL_Delay(20);
+                continue;
+            }
+        }
+
         MeterReading r;
         char err[512] = {0};
         int64_t frame_ms = 0;
-        bool ok = vlm_read(&app->vlm, rgb, rw, rh, app->default_unit, &r, &frame_ms, err,
-                           sizeof(err));
+        bool ok = vlm_read(&app->vlm, candidate ? read_rgb : rgb,
+                           candidate ? read_w : rw, candidate ? read_h : rh,
+                           app->default_unit, &r, &frame_ms, err, sizeof(err));
         bool paused_now = false;
         SDL_LockMutex(app->mu);
         paused_now = app->paused;
@@ -1923,58 +1989,32 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         app->reader.last_ok_ms = cs_epoch_ms();
         cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
         app->reader.error[0] = '\0';
-        if (!r.visible) {
-            app->reader.screen_visible = false;
+        if (candidate)
+            visibility_update_locked(app, &r, read_rgb, read_w, read_h,
+                                     best_frame_ts, frame_score);
+        if (candidate && r.hz > 0) {
+            app->reader.live_valid = true;
+            app->reader.live_hz = r.hz;
+            app->reader.live_confidence = r.confidence;
+            app->reader.live_ms = best_frame_ts;
+            cs_strlcpy(app->reader.live_raw, r.raw, sizeof(app->reader.live_raw));
+            char eng[64];
+            cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
+            snprintf(app->reader.status, sizeof(app->reader.status),
+                     "Screen visible · live %s · %d candidates", eng,
+                     app->visibility.frame_count);
+        } else {
             app->reader.live_valid = false;
             app->reader.live_raw[0] = '\0';
-            cs_strlcpy(app->reader.status, "No device screen visible — watching",
+            cs_strlcpy(app->reader.status,
+                       "Candidate screen visible — reading digits",
                        sizeof(app->reader.status));
-            visibility_update_locked(app, &r, NULL, 0, 0, best_frame_ts, frame_score);
-            app->reader.live_hz = 0;
-            app->reader.live_confidence = 0;
-        } else {
-            if (!app->reader.screen_visible) {
-                /* A new visibility event: right-top must show nothing until
-                 * the best frame has been chosen. */
-                app->reader.screen_visible = true;
-                app->reader.visible = false;
-                app->reader.display_until_ms = 0;
-                app->reader.hz = 0;
-                app->reader.confidence = 0;
-                app->reader.raw[0] = '\0';
-            }
-            if (candidate)
-                visibility_update_locked(app, &r, rgb, rw, rh, best_frame_ts, frame_score);
-            if (candidate && r.hz > 0) {
-                app->reader.live_valid = true;
-                app->reader.live_hz = r.hz;
-                app->reader.live_confidence = r.confidence;
-                app->reader.live_ms = best_frame_ts;
-                cs_strlcpy(app->reader.live_raw, r.raw, sizeof(app->reader.live_raw));
-                char eng[64];
-                cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
-                snprintf(app->reader.status, sizeof(app->reader.status),
-                         "Screen visible · live %s · %d candidates", eng,
-                         app->visibility.frame_count);
-            } else if (!candidate) {
-                app->reader.live_valid = false;
-                app->reader.live_hz = 0;
-                app->reader.live_raw[0] = '\0';
-                cs_strlcpy(app->reader.status,
-                           "Screen visible — scanning candidate frames (1 Hz)",
-                           sizeof(app->reader.status));
-            } else {
-                app->reader.live_valid = false;
-                app->reader.live_raw[0] = '\0';
-                cs_strlcpy(app->reader.status,
-                           "Candidate screen visible — reading digits",
-                           sizeof(app->reader.status));
-            }
         }
         SDL_UnlockMutex(app->mu);
         SDL_Delay(80);
     }
     free(rgb);
+    free(read_rgb);
     return 0;
 }
 

@@ -22,11 +22,12 @@ extern unsigned char *stbi_write_png_to_mem(const unsigned char *pixels,
 #define VLM_PROMPT_MAX 2048
 
 static const char *k_prompt =
-    "Read the frequency shown on the display. The screen may be rotated or mirrored. "
-    "Answer with JSON only: "
-    "{\"visible\":true,\"reading\":\"2536.8628\",\"unit\":\"MHz\",\"confidence\":0.9}. "
-    "Use reading \"\" if the screen is visible but unreadable; visible false if no "
-    "screen is visible.";
+    "What frequency is shown on the display? Answer with the number and unit only. "
+    "Ignore zero values; if the frequency is zero, answer NONE.";
+
+static const char *k_presence_prompt =
+    "Is a frequency counter or device display with numbers visible in this image? "
+    "Answer yes or no.";
 
 typedef struct {
     char *data;
@@ -348,6 +349,41 @@ void vlm_config_probe(VlmConfig *cfg)
     cs_strlcpy(cfg->error, cfg->detail, sizeof(cfg->error));
 }
 
+/* Crop the meter guide region (top 75% of the central 72%x50% ROI) and scale
+ * it to 640 px wide. This removes most of the face/background and makes the
+ * meter digits large enough for a small VLM. */
+static uint8_t *prepare_guide_crop(const uint8_t *rgb, int w, int h, int *ow, int *oh)
+{
+    if (!rgb || w < 32 || h < 16) return NULL;
+    int gw = (int)(w * 0.72f);
+    int gh = (int)(h * 0.50f);
+    int x0 = (w - gw) / 2;
+    int y0 = (h - gh) / 2;
+    int ch = (int)(gh * 0.75f);
+    if (gw < 32 || ch < 16) return NULL;
+    int tw = 640;
+    int th = (int)((long)ch * tw / gw);
+    if (th < 16) return NULL;
+    uint8_t *out = malloc((size_t)tw * th * 3);
+    if (!out) return NULL;
+    for (int y = 0; y < th; y++) {
+        int sy = y0 + (int)((long)y * ch / th);
+        if (sy >= h) sy = h - 1;
+        for (int x = 0; x < tw; x++) {
+            int sx = x0 + (int)((long)x * gw / tw);
+            if (sx >= w) sx = w - 1;
+            const uint8_t *p = rgb + ((size_t)sy * w + sx) * 3;
+            uint8_t *q = out + ((size_t)y * tw + x) * 3;
+            q[0] = p[0];
+            q[1] = p[1];
+            q[2] = p[2];
+        }
+    }
+    *ow = tw;
+    *oh = th;
+    return out;
+}
+
 static char *encode_png(const uint8_t *rgb, int w, int h, size_t *len)
 {
     int n = 0;
@@ -448,6 +484,127 @@ static bool llama_read(VlmConfig *cfg, const char *b64, const char *default_unit
     return parsed;
 }
 
+static bool parse_presence_text(const char *text, bool *visible)
+{
+    if (!text) return false;
+    char low[512];
+    cs_strlcpy(low, text, sizeof(low));
+    cs_lower(low);
+    cs_trim(low);
+    if (strstr(low, "\"visible\":false") || strstr(low, "\"visible\": false"))
+        { *visible = false; return true; }
+    if (strstr(low, "\"visible\":true") || strstr(low, "\"visible\": true"))
+        { *visible = true; return true; }
+    if (strstr(low, "false")) { *visible = false; return true; }
+    if (strstr(low, "true")) { *visible = true; return true; }
+    for (const char *p = low; *p; p++) {
+        if (*p == 'y') { *visible = true; return true; }
+        if (*p == 'n') { *visible = false; return true; }
+    }
+    return false;
+}
+
+static bool ollama_detect(VlmConfig *cfg, const char *b64, bool *visible, char *err,
+                          size_t err_cap)
+{
+    char prompt[VLM_PROMPT_MAX];
+    cs_json_escape(k_presence_prompt, prompt, sizeof(prompt));
+    size_t cap = strlen(b64) + strlen(cfg->model) + strlen(prompt) + 512;
+    char *body = malloc(cap);
+    if (!body) { snprintf(err, err_cap, "Out of memory"); return false; }
+    snprintf(body, cap,
+             "{\"model\":\"%s\",\"prompt\":\"%s\",\"images\":[\"%s\"],"
+             "\"stream\":false,\"options\":{\"temperature\":0,\"num_predict\":16}}",
+             cfg->model, prompt, b64);
+    char url[512];
+    join_url(url, sizeof(url), cfg->url, "/api/generate");
+    HttpBuf resp = {0};
+    long status = 0;
+    char http_err[256];
+    bool ok = http_request(url, body, &resp, &status, http_err, sizeof(http_err));
+    free(body);
+    if (!ok) { snprintf(err, err_cap, "Ollama: %s", http_err); free(resp.data); return false; }
+    char text[1024];
+    bool got = cs_json_get_string(resp.data, "response", text, sizeof(text));
+    free(resp.data);
+    if (!got || !parse_presence_text(text, visible)) {
+        snprintf(err, err_cap, "Presence check returned: %.120s", text);
+        return false;
+    }
+    return true;
+}
+
+static bool llama_detect(VlmConfig *cfg, const char *b64, bool *visible, char *err,
+                         size_t err_cap)
+{
+    char prompt[VLM_PROMPT_MAX];
+    cs_json_escape(k_presence_prompt, prompt, sizeof(prompt));
+    size_t cap = strlen(b64) + strlen(cfg->model) + strlen(prompt) + 640;
+    char *body = malloc(cap);
+    if (!body) { snprintf(err, err_cap, "Out of memory"); return false; }
+    snprintf(body, cap,
+             "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":["
+             "{\"type\":\"text\",\"text\":\"%s\"},"
+             "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,%s\"}}"
+             "]}],\"max_tokens\":16,\"temperature\":0}",
+             cfg->model, prompt, b64);
+    char url[512];
+    join_url(url, sizeof(url), cfg->url, "/v1/chat/completions");
+    HttpBuf resp = {0};
+    long status = 0;
+    char http_err[256];
+    bool ok = http_request(url, body, &resp, &status, http_err, sizeof(http_err));
+    free(body);
+    if (!ok) { snprintf(err, err_cap, "llama-server: %s", http_err); free(resp.data); return false; }
+    char text[1024];
+    bool got = cs_json_get_string(resp.data, "content", text, sizeof(text));
+    free(resp.data);
+    if (!got || !parse_presence_text(text, visible)) {
+        snprintf(err, err_cap, "Presence check returned: %.120s", text);
+        return false;
+    }
+    return true;
+}
+
+bool vlm_detect(VlmConfig *cfg, const uint8_t *rgb, int w, int h, bool *visible, char *err,
+                size_t err_cap)
+{
+    if (err && err_cap) err[0] = '\0';
+    if (!visible) return false;
+    *visible = false;
+    if (!cfg || !cfg->available) {
+        snprintf(err, err_cap, "No reader backend is available");
+        return false;
+    }
+    if (cfg->active == VLM_BACKEND_MOCK) { *visible = true; return true; }
+    if (!rgb || w <= 0 || h <= 0) {
+        snprintf(err, err_cap, "No camera frame");
+        return false;
+    }
+    int cw = 0, ch = 0;
+    uint8_t *crop = prepare_guide_crop(rgb, w, h, &cw, &ch);
+    if (!crop) {
+        snprintf(err, err_cap, "Could not prepare the guide crop");
+        return false;
+    }
+    size_t png_len = 0;
+    char *png = encode_png(crop, cw, ch, &png_len);
+    free(crop);
+    if (!png) { snprintf(err, err_cap, "PNG encoding failed"); return false; }
+    char *b64 = cs_base64_encode((const uint8_t *)png, png_len);
+    free(png);
+    if (!b64) { snprintf(err, err_cap, "Base64 encoding failed"); return false; }
+    bool ok = false;
+    if (cfg->active == VLM_BACKEND_OLLAMA)
+        ok = ollama_detect(cfg, b64, visible, err, err_cap);
+    else if (cfg->active == VLM_BACKEND_LLAMA)
+        ok = llama_detect(cfg, b64, visible, err, err_cap);
+    else
+        snprintf(err, err_cap, "Unsupported backend");
+    free(b64);
+    return ok;
+}
+
 double vlm_demo_hz(int64_t now_ms)
 {
     double t = (double)now_ms / 1000.0;
@@ -484,8 +641,15 @@ bool vlm_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h, const char *defa
         return false;
     }
 
+    int cw = 0, ch = 0;
+    uint8_t *crop = prepare_guide_crop(rgb, w, h, &cw, &ch);
+    if (!crop) {
+        snprintf(err, err_cap, "Could not prepare the meter guide crop");
+        return false;
+    }
     size_t png_len = 0;
-    char *png = encode_png(rgb, w, h, &png_len);
+    char *png = encode_png(crop, cw, ch, &png_len);
+    free(crop);
     if (!png) {
         snprintf(err, err_cap, "PNG encoding failed");
         return false;

@@ -79,37 +79,46 @@ static bool parse_number_token(const char *tok, const char *unit, double *out)
     size_t n = strlen(tok);
     if (n >= sizeof(clean)) return false;
 
+    /* Choose one decimal separator.
+     * - both separators: the rightmost is decimal;
+     * - multiple dots: the rightmost is decimal, earlier dots are grouping;
+     * - multiple commas: a final group of three is grouping, otherwise the
+     *   rightmost comma is decimal;
+     * - a single comma with three trailing digits is grouping for MHz/kHz/Hz,
+     *   but decimal for GHz. */
     const char *last_dot = strrchr(tok, '.');
     const char *last_comma = strrchr(tok, ',');
     char decimal = 0;
+    size_t decimal_pos = (size_t)-1;
     if (last_dot && last_comma) {
-        decimal = (last_dot > last_comma) ? '.' : ',';
+        if (last_dot > last_comma) { decimal = '.'; decimal_pos = (size_t)(last_dot - tok); }
+        else { decimal = ','; decimal_pos = (size_t)(last_comma - tok); }
     } else if (last_dot) {
         decimal = '.';
-        if (strchr(tok, '.') != last_dot) {
-            /* Multiple dots: treat them all as thousands separators. */
-            decimal = 0;
-        }
+        decimal_pos = (size_t)(last_dot - tok);
     } else if (last_comma) {
         const char *after = last_comma + 1;
         size_t digits = strlen(after);
-        if (strchr(tok, ',') != last_comma) {
+        bool multiple = strchr(tok, ',') != last_comma;
+        if (multiple && digits == 3) {
             decimal = 0;
-        } else if (digits == 3 && unit && strcmp(unit, "GHz") != 0) {
+        } else if (!multiple && digits == 3 && unit && strcmp(unit, "GHz") != 0) {
             decimal = 0;
         } else {
             decimal = ',';
+            decimal_pos = (size_t)(last_comma - tok);
         }
     }
 
     size_t o = 0;
+    bool wrote_decimal = false;
     for (size_t i = 0; i < n; i++) {
         char c = tok[i];
         if (isdigit((unsigned char)c)) {
             clean[o++] = c;
-        } else if (c == decimal && decimal) {
+        } else if (c == decimal && decimal && i == decimal_pos && !wrote_decimal) {
             clean[o++] = '.';
-            decimal = 0; /* only the first decimal separator survives */
+            wrote_decimal = true;
         } else if (c == '.' || c == ',' || c == ' ') {
             continue;
         } else if (c == '-' && o == 0) {
@@ -190,7 +199,9 @@ bool meter_parse_text(const char *text, const char *default_unit, MeterReading *
                 }
             }
         }
-        if (hz < 1.0 || hz > 1e11) continue;
+        /* Zero is a status/placeholder (for example CTCSS 0.0 Hz), never a
+         * valid measured frequency. Ignore it and keep scanning the text. */
+        if (hz <= 0.0 || hz > 1e11) continue;
         out->hz = hz;
         out->visible = true;
         if (unit[0]) cs_strlcpy(out->unit, unit, sizeof(out->unit));

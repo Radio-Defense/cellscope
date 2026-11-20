@@ -119,11 +119,26 @@ static void test_meter(void)
     CHECK(meter_parse_text("2.160,150 MHz", "Hz", &r), "parse EU thousands+decimal");
     CHECK(llabs((long long)r.hz - 2160150000LL) < 10, "EU hz %.0f", r.hz);
 
+    CHECK(meter_parse_text("2.551.9180 MHz", "Hz", &r), "parse dotted thousands+decimal");
+    CHECK(llabs((long long)r.hz - 2551918000LL) < 10, "dotted hz %.0f", r.hz);
+    CHECK(meter_parse_text("2,551.9180 MHz", "Hz", &r), "parse comma thousands + dot decimal");
+    CHECK(llabs((long long)r.hz - 2551918000LL) < 10, "comma/dot hz %.0f", r.hz);
+    CHECK(meter_parse_text("2.551,9180 MHz", "Hz", &r), "parse dot thousands + comma decimal");
+    CHECK(llabs((long long)r.hz - 2551918000LL) < 10, "dot/comma hz %.0f", r.hz);
+    CHECK(meter_parse_text("SF-401PLUS Freq:2.551.9180MHz", "Hz", &r),
+          "parse labelled dotted frequency");
+    CHECK(llabs((long long)r.hz - 2551918000LL) < 10, "labelled hz %.0f", r.hz);
+
     CHECK(meter_parse_text("2160.15", "MHz", &r), "parse default MHz");
     CHECK(llabs((long long)r.hz - 2160150000LL) < 10, "default hz %.0f", r.hz);
 
     CHECK(!meter_parse_text("no reading here", "MHz", &r), "no digits");
     CHECK(!meter_parse_text("", "MHz", &r), "empty");
+    CHECK(!meter_parse_text("0 Hz", "MHz", &r), "zero Hz ignored");
+    CHECK(!meter_parse_text("0.0 MHz", "MHz", &r), "zero MHz ignored");
+    CHECK(meter_parse_text("Ctcss:0.0Hz Freq:2.551.9180MHz", "Hz", &r),
+          "zero status + real frequency");
+    CHECK(llabs((long long)r.hz - 2551918000LL) < 10, "zero-skip hz %.0f", r.hz);
 
     const char *json =
         "```json\n{\"visible\":true,\"reading\":\"123.456789\",\"unit\":\"MHz\","

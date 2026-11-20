@@ -36,6 +36,8 @@ void vlm_config_probe(VlmConfig *cfg);
  * present they are the encoded frame and avoid a second encode. */
 bool vlm_read(VlmConfig *cfg, const uint8_t *rgb, int w, int h, const char *default_unit,
               MeterReading *out, int64_t *frame_ms, char *err, size_t err_cap);
+bool vlm_detect(VlmConfig *cfg, const uint8_t *rgb, int w, int h, bool *visible,
+                char *err, size_t err_cap);
 
 const char *vlm_backend_name(VlmBackend b);
 const char *vlm_prompt_text(void);
