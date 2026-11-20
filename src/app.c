@@ -198,7 +198,11 @@ static bool visibility_emit_locked(App *app, int frame_index, double consensus,
                                    int readable_count)
 {
     VisibilitySession *v = &app->visibility;
-    if (!v->active || frame_index < 0 || frame_index >= v->frame_count) return false;
+    /* One consensus per visibility event. A new event is only created after
+     * visibility_commit_locked has observed the screen leave and reset v. */
+    if (!v->active || v->committed ||
+        frame_index < 0 || frame_index >= v->frame_count)
+        return false;
     VisibilityFrame *f = &v->frames[frame_index];
     if (f->hz <= 0) return false;
 
@@ -288,6 +292,9 @@ static void visibility_update_locked(App *app, const MeterReading *r, const uint
         v->active = true;
         v->started_ms = cs_epoch_ms();
     }
+    /* Ignore any further visible-frame readings after this event has already
+     * reached consensus. Only the screen-loss path resets the session. */
+    if (v->committed) return;
     v->total_readings++;
     if (r->hz <= 0) return;
     v->readable_readings++;
