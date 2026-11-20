@@ -438,6 +438,7 @@ void app_print_usage(void)
         "  --demo                 Synthetic phone + synthetic meter feed (no hardware)\n"
         "  --autoplay             Start capture immediately (default: wait for play)\n"
         "  --demo-phone           Synthetic cell samples only\n"
+        "  --readme-fixture MODE  README screenshot fixture: main, live, best\n"
         "  --image PATH           Use a still image instead of a webcam (testing)\n"
         "  --export-json PATH     Write both lists to JSON and exit (testing/automation)\n"
         "  --download-model REPO  Download a Hugging Face VLM and make it the reader\n"
@@ -599,6 +600,12 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->demo_phone = true;
         } else if (strcmp(a, "--demo-phone") == 0) {
             app->demo_phone = true;
+        } else if (strcmp(a, "--readme-fixture") == 0 && i + 1 < argc) {
+            const char *mode = argv[++i];
+            app->readme_fixture = true;
+            app->readme_fixture_mode = strcmp(mode, "live") == 0 ? 2
+                                     : strcmp(mode, "best") == 0 ? 3
+                                                                 : 1;
         } else if (strcmp(a, "--autoplay") == 0) {
             app->autoplay = true;
         } else if (strcmp(a, "--no-modal") == 0) {
@@ -671,6 +678,15 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             return APP_ARGS_ERROR;
         }
         return APP_ARGS_OK;
+    }
+    if (app->readme_fixture) {
+        app->demo = false;
+        app->demo_phone = false;
+        app->image_mode = true;
+        app->no_modal = true;
+        app->no_runtime = true;
+        if (!app->image_path[0])
+            cs_strlcpy(app->image_path, "example.png", sizeof(app->image_path));
     }
     if (app->demo || app->demo_phone) {
         if (app->demo_phone && app->image_mode) app->image_mode = false;
@@ -812,6 +828,126 @@ void app_seed_demo(App *app)
     SDL_UnlockMutex(app->mu);
 }
 
+static void readme_fixture_seed(App *app)
+{
+    int64_t now = cs_epoch_ms();
+    struct CellFixture {
+        const char *band, *rat, *enb, *cid, *pci, *ta, *arfcn, *bw, *dl, *ul;
+        bool ca;
+    } cells[] = {
+        {"n1", "5G NSA", "31301", "22", "671 / 389", "11", "432030 / 3600",
+         "10 / 20", "2160.2 / 940.0", "1970.2 / 895.0", true},
+        {"3", "LTE", "31302", "101", "102", "7", "1650", "20", "1842.5",
+         "1747.5", false},
+        {"20", "LTE", "31303", "77", "233", "9", "6300", "10", "806.0", "847.0",
+         false},
+        {"8", "LTE", "31304", "44", "318", "6", "3748", "10", "942.5", "897.5",
+         false},
+        {"n78", "5G SA", "31305", "9", "512", "13", "641280", "100", "3489.6",
+         "3489.6", true},
+    };
+    static const double meters[] = {
+        2550.8221, 2551.1045, 2551.2918,
+        2551.6409, 2551.8126, 2551.9963,
+    };
+
+    SDL_LockMutex(app->mu);
+    app->adb.state = ADB_STATE_CONNECTED;
+    app->adb.attempted = true;
+    app->adb.device_count = 1;
+    cs_strlcpy(app->adb.serial, "R58M31NXQAB", sizeof(app->adb.serial));
+    cs_strlcpy(app->adb.model, "Pixel 8", sizeof(app->adb.model));
+    cs_strlcpy(app->adb.detail, "ADB · USB · authorized", sizeof(app->adb.detail));
+    app->adb.hint[0] = '\0';
+    app->adb.last_check_ms = now;
+    app->ever_connected = true;
+    app->modal_checking = false;
+    app->last_poll_ok_ms = cs_now_ms();
+    cs_strlcpy(app->device_label, "Pixel 8 · KPN", sizeof(app->device_label));
+
+    for (int i = 0; i < 5; i++) {
+        CellSample c;
+        memset(&c, 0, sizeof(c));
+        c.ts_ms = now - (int64_t)(4 - i) * 1200;
+        cs_strlcpy(c.plmn, "20408", sizeof(c.plmn));
+        cs_strlcpy(c.mcc, "204", sizeof(c.mcc));
+        cs_strlcpy(c.mnc, "08", sizeof(c.mnc));
+        cs_strlcpy(c.country, "Netherlands", sizeof(c.country));
+        cs_strlcpy(c.operator_name, "KPN", sizeof(c.operator_name));
+        cs_strlcpy(c.tac, "4123", sizeof(c.tac));
+        cs_strlcpy(c.rat, cells[i].rat, sizeof(c.rat));
+        cs_strlcpy(c.enb, cells[i].enb, sizeof(c.enb));
+        cs_strlcpy(c.cid, cells[i].cid, sizeof(c.cid));
+        cs_strlcpy(c.pci, cells[i].pci, sizeof(c.pci));
+        cs_strlcpy(c.ta, cells[i].ta, sizeof(c.ta));
+        cs_strlcpy(c.arfcn, cells[i].arfcn, sizeof(c.arfcn));
+        cs_strlcpy(c.band, cells[i].band, sizeof(c.band));
+        cs_strlcpy(c.bw, cells[i].bw, sizeof(c.bw));
+        c.ca = cells[i].ca;
+        cs_strlcpy(c.f_dl, cells[i].dl, sizeof(c.f_dl));
+        cs_strlcpy(c.f_ul, cells[i].ul, sizeof(c.f_ul));
+        WifiAp aps[3];
+        aps[0].id = wifi_anonymize("cellscope-readme-home", 0x52454144);
+        aps[0].rssi = -41;
+        aps[1].id = wifi_anonymize("cellscope-readme-neighbour", 0x52454144);
+        aps[1].rssi = -66;
+        aps[2].id = wifi_anonymize("cellscope-readme-cafe", 0x52454144);
+        aps[2].rssi = -79;
+        wifi_format(aps, 3, c.wifi, sizeof(c.wifi));
+        cs_strlcpy(c.source, "Pixel 8", sizeof(c.source));
+        cell_push_locked(app, &c);
+    }
+
+    for (int i = 0; i < (int)CS_ARRAY_LEN(meters); i++) {
+        MeterSample m;
+        memset(&m, 0, sizeof(m));
+        m.ts_ms = now - (int64_t)(CS_ARRAY_LEN(meters) - 1 - i) * 1700;
+        cs_format_time_ms(m.ts_ms, m.time_text, sizeof(m.time_text));
+        m.hz = (uint64_t)(meters[i] * 1e6 + 0.5);
+        m.confidence = 0.95;
+        snprintf(m.raw, sizeof(m.raw), "%.4fMHz", meters[i]);
+        cs_strlcpy(m.backend, "GLM-OCR", sizeof(m.backend));
+        snprintf(m.shot_name, sizeof(m.shot_name), "meter_readme_%02d.png", i + 1);
+        meter_push_locked(app, &m);
+    }
+
+    double latest = meters[CS_ARRAY_LEN(meters) - 1];
+    app->reader.screen_visible = app->readme_fixture_mode == 3 ? false : true;
+    app->reader.visible = app->readme_fixture_mode == 2 ? false : true;
+    app->reader.live_valid = app->readme_fixture_mode != 3;
+    app->reader.hz = latest * 1e6;
+    app->reader.confidence = 0.95;
+    app->reader.live_hz = latest * 1e6;
+    app->reader.live_confidence = 0.95;
+    app->reader.live_ms = now;
+    app->reader.display_until_ms = app->reader.visible ? now + 300000 : 0;
+    app->reader.burst_count = 6;
+    app->reader.best_score = 0.94f;
+    app->reader.frame_w = 1620;
+    app->reader.frame_h = 1080;
+    app->reader.last_ok_ms = now;
+    app->reader.attempts = 6;
+    app->reader.accepted = 6;
+    app->reader.kind = VLM_BACKEND_LLAMA;
+    app->reader.is_vlm = true;
+    cs_strlcpy(app->reader.backend, "GLM-OCR", sizeof(app->reader.backend));
+    cs_strlcpy(app->reader.detail, "zai-org/GLM-OCR · fixture", sizeof(app->reader.detail));
+    cs_strlcpy(app->reader.raw, "2551.9963MHz", sizeof(app->reader.raw));
+    cs_strlcpy(app->reader.live_raw, "2551.9963MHz", sizeof(app->reader.live_raw));
+    if (app->readme_fixture_mode == 2)
+        cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz",
+                   sizeof(app->reader.status));
+    else if (app->readme_fixture_mode == 3)
+        cs_strlcpy(app->reader.status, "Screen left · consensus recorded",
+                   sizeof(app->reader.status));
+    else
+        cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz · 8 candidates",
+                   sizeof(app->reader.status));
+    app->cell_follow = true;
+    app->meter_follow = true;
+    SDL_UnlockMutex(app->mu);
+}
+
 bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t err_cap)
 {
     app->win = win;
@@ -886,12 +1022,14 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         }
     }
 
-    adb_find(app->adb_override, app->adb_path, sizeof(app->adb_path));
-    if (!app->adb_path[0]) {
-        adb_check(NULL, &app->adb);
-        app->adb.attempted = false;
-        app->adb.last_check_ms = 0;
-        app->adb.busy = false;
+    if (!app->readme_fixture) {
+        adb_find(app->adb_override, app->adb_path, sizeof(app->adb_path));
+        if (!app->adb_path[0]) {
+            adb_check(NULL, &app->adb);
+            app->adb.attempted = false;
+            app->adb.last_check_ms = 0;
+            app->adb.busy = false;
+        }
     }
 
     vlm_config_init(&app->vlm, app->vlm_mode, app->vlm_url, app->vlm_model);
@@ -919,6 +1057,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     app->modal_open = !app->no_modal && !app->demo && !app->image_mode;
     app->tracker = (MeterTracker){0};
     meter_tracker_init(&app->tracker);
+    if (app->readme_fixture) readme_fixture_seed(app);
     if (app->paused) {
         SDL_LockMutex(app->mu);
         cs_strlcpy(app->reader.status, "Press play to begin capture",
@@ -941,7 +1080,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         SDL_UnlockMutex(app->mu);
     }
     if (app->demo && !app->paused) app_seed_demo(app);
-    if (!app->paused) {
+    if (!app->paused && !app->readme_fixture) {
         SDL_LockMutex(app->mu);
         bool session_ok = session_begin_locked(app);
         SDL_UnlockMutex(app->mu);
@@ -954,16 +1093,19 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         SDL_SetAtomicInt(&app->quit, 1);
     }
 
-    if (app->auto_connect && !app->demo) app->want_check = true;
+    if (app->auto_connect && !app->demo && !app->readme_fixture) app->want_check = true;
 
-    app->adb_thread = SDL_CreateThread(cellscope_adb_thread, "adb-poller", app);
-    app->vlm_thread = SDL_CreateThread(cellscope_vlm_thread, "vlm-reader", app);
-    if (app->runtime_enabled) {
-        app->bootstrap_thread =
-            SDL_CreateThread(cellscope_bootstrap_thread, "py-runtime", app);
+    if (!app->readme_fixture) {
+        app->adb_thread = SDL_CreateThread(cellscope_adb_thread, "adb-poller", app);
+        app->vlm_thread = SDL_CreateThread(cellscope_vlm_thread, "vlm-reader", app);
+        if (app->runtime_enabled) {
+            app->bootstrap_thread =
+                SDL_CreateThread(cellscope_bootstrap_thread, "py-runtime", app);
+        }
     }
-    if (!app->adb_thread || !app->vlm_thread ||
-        (app->runtime_enabled && !app->bootstrap_thread)) {
+    if (!app->readme_fixture &&
+        (!app->adb_thread || !app->vlm_thread ||
+         (app->runtime_enabled && !app->bootstrap_thread))) {
         snprintf(err, err_cap, "Could not create worker threads");
         return false;
     }
@@ -1100,6 +1242,7 @@ bool app_retry_camera(App *app, bool notify)
 
 void app_update(App *app)
 {
+    if (app->readme_fixture) return;
     int64_t now = cs_now_ms();
     bool export_pending = false;
     int export_result = 0;

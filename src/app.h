@@ -122,6 +122,8 @@ typedef struct App {
     TrainConfig train;
     bool demo;
     bool demo_phone;
+    bool readme_fixture;
+    int readme_fixture_mode;
     bool autoplay;
     bool no_modal;
     bool image_mode;

@@ -35,7 +35,7 @@ chat template and `Text Recognition:` prompt. No
 telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
 releases, ModelScope, and Hugging Face if you download an HF model.
 
-![CellScope demo](docs/screenshot-main.png)
+![CellScope with simulated connected phone data and GLM-OCR meter reading](docs/screenshot-main.png)
 
 ## Stack
 
