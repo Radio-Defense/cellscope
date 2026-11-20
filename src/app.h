@@ -45,35 +45,28 @@ typedef struct {
     bool demo;
 } MeterSample;
 
-#define VIS_CLUSTER_MAX 32
+#define VIS_FRAME_MAX 512
 
 typedef struct {
     double hz;
     double confidence;
     float frame_score;
-    double weight;
     int64_t frame_ts_ms;   /* epoch ms when this frame appeared in the webcam */
     int64_t extracted_ms;  /* epoch ms when the VLM result arrived */
     uint8_t *rgb;
     int w, h;
     char raw[256];
-} VisibilityCandidate;
-
-typedef struct {
-    double center_hz;
-    double weight;
-    int count;
-    VisibilityCandidate best;
-} VisibilityCluster;
+} VisibilityFrame;
 
 typedef struct {
     bool active;
+    bool committed;
     int64_t started_ms;
     int total_readings;
     int readable_readings;
-    int cluster_count;
-    bool committed;
-    VisibilityCluster clusters[VIS_CLUSTER_MAX];
+    int frame_count;
+    int frame_cap;
+    VisibilityFrame *frames;
 } VisibilitySession;
 
 typedef struct {

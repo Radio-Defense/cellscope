@@ -56,8 +56,8 @@ static void meter_push_locked(App *app, const MeterSample *m)
 static void visibility_reset_locked(App *app)
 {
     VisibilitySession *v = &app->visibility;
-    for (int i = 0; i < VIS_CLUSTER_MAX; i++)
-        free(v->clusters[i].best.rgb);
+    for (int i = 0; i < v->frame_count; i++) free(v->frames[i].rgb);
+    free(v->frames);
     memset(v, 0, sizeof(*v));
 }
 
@@ -67,149 +67,208 @@ static double visibility_tolerance(double hz)
     return t < 1000.0 ? 1000.0 : t;
 }
 
-static void visibility_set_candidate(VisibilityCandidate *dst, const MeterReading *r,
-                                     double quality, const uint8_t *rgb, int w, int h,
-                                     int64_t frame_ts, int64_t extracted_ms)
+static double visibility_frame_quality(const VisibilityFrame *f)
 {
-    free(dst->rgb);
-    dst->rgb = NULL;
-    dst->w = dst->h = 0;
-    if (rgb && w > 0 && h > 0) {
-        size_t bytes = (size_t)w * h * 3;
-        dst->rgb = malloc(bytes);
-        if (dst->rgb) {
-            memcpy(dst->rgb, rgb, bytes);
-            dst->w = w;
-            dst->h = h;
-        }
-    }
-    dst->hz = r->hz;
-    dst->confidence = r->confidence;
-    dst->weight = quality;
-    dst->frame_ts_ms = frame_ts > 0 ? frame_ts : extracted_ms;
-    dst->extracted_ms = extracted_ms;
-    cs_strlcpy(dst->raw, r->raw, sizeof(dst->raw));
+    return (f->confidence > 0 ? f->confidence : 0.5) * 0.7 + f->frame_score * 0.3;
 }
 
-/* Commit the most probable reading across the entire visibility event. Every
- * extracted reading votes in a frequency cluster; the winning cluster is the
- * one with the greatest confidence/quality weight. Within it, the best frame
- * (also by confidence/quality) is saved. No fixed 12-frame window is used. */
-static bool visibility_emit_locked(App *app)
+static void visibility_store_frame_locked(VisibilitySession *v, const MeterReading *r,
+                                          const uint8_t *rgb, int w, int h,
+                                          int64_t frame_ts, float frame_score,
+                                          int64_t extracted_ms)
+{
+    if (!rgb || w <= 0 || h <= 0 || v->frame_count >= VIS_FRAME_MAX) return;
+    if (v->frame_count == v->frame_cap) {
+        int cap = v->frame_cap ? v->frame_cap * 2 : 16;
+        if (cap > VIS_FRAME_MAX) cap = VIS_FRAME_MAX;
+        VisibilityFrame *grown = realloc(v->frames, (size_t)cap * sizeof(*grown));
+        if (!grown) return;
+        v->frames = grown;
+        v->frame_cap = cap;
+    }
+    VisibilityFrame *f = &v->frames[v->frame_count];
+    memset(f, 0, sizeof(*f));
+    size_t bytes = (size_t)w * h * 3;
+    f->rgb = malloc(bytes);
+    if (!f->rgb) return;
+    memcpy(f->rgb, rgb, bytes);
+    f->w = w;
+    f->h = h;
+    f->frame_score = frame_score;
+    f->hz = r->hz;
+    f->confidence = r->confidence;
+    f->frame_ts_ms = frame_ts > 0 ? frame_ts : extracted_ms;
+    f->extracted_ms = extracted_ms;
+    cs_strlcpy(f->raw, r->raw, sizeof(f->raw));
+    v->frame_count++;
+}
+
+/* Build frequency clusters from every frame retained for this visibility
+ * event and choose the most probable reading. The winning frame is the
+ * highest-confidence/quality frame in the winning cluster. */
+static int visibility_pick_locked(App *app, bool require_consensus, int *out_readable,
+                                  double *out_consensus)
 {
     VisibilitySession *v = &app->visibility;
-    if (!v->active) return false;
+    enum { MAX_LOCAL = 64 };
+    struct Local {
+        double center;
+        double weight;
+        int count;
+        int best;
+        double best_quality;
+        double last_weight;
+    } clusters[MAX_LOCAL];
+    int n = 0;
+    int readable_count = 0;
+    double total_weight = 0.0;
+
+    for (int i = 0; i < v->frame_count; i++) {
+        VisibilityFrame *f = &v->frames[i];
+        if (f->hz <= 0) continue;
+        readable_count++;
+        double q = visibility_frame_quality(f);
+        double tol = visibility_tolerance(f->hz);
+        int ci = -1;
+        double nearest = 1e300;
+        for (int k = 0; k < n; k++) {
+            double d = fabs(f->hz - clusters[k].center);
+            if (d <= tol && d < nearest) {
+                nearest = d;
+                ci = k;
+            }
+        }
+        if (ci < 0) {
+            if (n >= MAX_LOCAL) continue;
+            ci = n++;
+            memset(&clusters[ci], 0, sizeof(clusters[ci]));
+            clusters[ci].center = f->hz;
+            clusters[ci].best = -1;
+        }
+        struct Local *c = &clusters[ci];
+        double old = c->weight;
+        c->weight += q;
+        c->count++;
+        c->center = (c->center * old + f->hz * q) / c->weight;
+        if (q > c->best_quality) {
+            c->best_quality = q;
+            c->best = i;
+        }
+    }
 
     int win = -1;
     double win_score = -1.0;
-    double total_weight = 0.0;
-    for (int i = 0; i < v->cluster_count; i++) {
-        VisibilityCluster *c = &v->clusters[i];
-        if (c->count <= 0) continue;
-        total_weight += c->weight;
-        /* Repetition is evidence, but confidence and frame quality still
-         * matter. The small count bonus breaks near-ties toward consensus. */
-        double score = c->weight + 0.02 * (double)c->count;
+    double second_weight = 0.0;
+    for (int i = 0; i < n; i++) {
+        total_weight += clusters[i].weight;
+        double score = clusters[i].weight + 0.02 * (double)clusters[i].count;
         if (score > win_score) {
-            win_score = score;
+            if (win >= 0) second_weight = clusters[win].weight;
             win = i;
+            win_score = score;
+        } else if (clusters[i].weight > second_weight) {
+            second_weight = clusters[i].weight;
         }
     }
 
-    if (win >= 0 && v->clusters[win].best.hz > 0) {
-        VisibilityCluster *c = &v->clusters[win];
-        VisibilityCandidate *b = &c->best;
-        char dir[CS_PATH_MAX], capture[CS_PATH_MAX] = {0};
-        cs_strlcpy(dir,
-                   app->session_active && app->session_dir[0] ? app->session_dir
-                                                              : app->capture_dir,
-                   sizeof(dir));
-        int64_t ts = b->frame_ts_ms > 0
-                         ? b->frame_ts_ms
-                         : (b->extracted_ms > 0 ? b->extracted_ms : cs_epoch_ms());
-        char stamp[40];
-        cs_format_date_stamp(ts, stamp, sizeof(stamp));
-        snprintf(capture, sizeof(capture), "%s/meter_%s_%03d.png", dir, stamp,
-                 (int)(ts % 1000));
-        if (b->rgb && b->w > 0 && b->h > 0) {
-            if (!stbi_write_png(capture, b->w, b->h, 3, b->rgb, b->w * 3))
-                capture[0] = '\0';
-        } else {
+    if (out_readable) *out_readable = readable_count;
+    if (out_consensus)
+        *out_consensus = (win >= 0 && total_weight > 0)
+                             ? clusters[win].weight / total_weight
+                             : 0.0;
+    if (win < 0 || clusters[win].best < 0) return -1;
+
+    if (require_consensus) {
+        if (readable_count < 5) return -1;
+        if (clusters[win].count < 4) return -1;
+        if (total_weight <= 0.0 || clusters[win].weight / total_weight < 0.65)
+            return -1;
+        if (second_weight > 0.0 &&
+            clusters[win].weight - second_weight < 0.25 * clusters[win].weight)
+            return -1;
+    }
+    return clusters[win].best;
+}
+
+static bool visibility_emit_locked(App *app, int frame_index, double consensus,
+                                   int readable_count)
+{
+    VisibilitySession *v = &app->visibility;
+    if (!v->active || frame_index < 0 || frame_index >= v->frame_count) return false;
+    VisibilityFrame *f = &v->frames[frame_index];
+    if (f->hz <= 0) return false;
+
+    char dir[CS_PATH_MAX], capture[CS_PATH_MAX] = {0};
+    cs_strlcpy(dir,
+               app->session_active && app->session_dir[0] ? app->session_dir
+                                                          : app->capture_dir,
+               sizeof(dir));
+    int64_t ts = f->frame_ts_ms > 0
+                     ? f->frame_ts_ms
+                     : (f->extracted_ms > 0 ? f->extracted_ms : cs_epoch_ms());
+    char stamp[40];
+    cs_format_date_stamp(ts, stamp, sizeof(stamp));
+    snprintf(capture, sizeof(capture), "%s/meter_%s_%03d.png", dir, stamp,
+             (int)(ts % 1000));
+    if (f->rgb && f->w > 0 && f->h > 0) {
+        if (!stbi_write_png(capture, f->w, f->h, 3, f->rgb, f->w * 3))
             capture[0] = '\0';
-        }
-
-        MeterSample ms;
-        memset(&ms, 0, sizeof(ms));
-        ms.ts_ms = ts;
-        cs_format_time_ms(ms.ts_ms, ms.time_text, sizeof(ms.time_text));
-        ms.hz = (uint64_t)(b->hz + 0.5);
-        ms.confidence = b->confidence;
-        cs_strlcpy(ms.raw, b->raw, sizeof(ms.raw));
-        cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
-        cs_strlcpy(ms.path, capture, sizeof(ms.path));
-        cs_strlcpy(ms.shot_name, file_basename(capture), sizeof(ms.shot_name));
-        meter_push_locked(app, &ms);
-
-        double consensus = total_weight > 0 ? c->weight / total_weight : 0.0;
-        app_log(app,
-                "consensus reading recorded: %llu Hz, %d/%d frames in cluster, "
-                "%d readings, consensus %.2f, frame_ts=%lld extracted=%lld",
-                (unsigned long long)ms.hz, c->count, v->readable_readings,
-                v->total_readings, consensus, (long long)b->frame_ts_ms,
-                (long long)b->extracted_ms);
-        app->reader.accepted++;
-        cs_strlcpy(app->reader.capture_path, capture, sizeof(app->reader.capture_path));
-        app->reader.visible = true;
-        app->reader.display_until_ms = cs_now_ms() + 3000;
-        app->reader.hz = (double)ms.hz;
-        app->reader.confidence = ms.confidence;
-        cs_strlcpy(app->reader.raw, ms.raw, sizeof(app->reader.raw));
-        char eng[64];
-        cs_format_eng(ms.hz, eng, sizeof(eng));
-        snprintf(app->reader.status, sizeof(app->reader.status),
-                 "Recorded %s · %d/%d frames agree", eng, c->count,
-                 v->readable_readings);
-        return true;
+    } else {
+        capture[0] = '\0';
     }
-    return false;
+
+    MeterSample ms;
+    memset(&ms, 0, sizeof(ms));
+    ms.ts_ms = ts;
+    cs_format_time_ms(ms.ts_ms, ms.time_text, sizeof(ms.time_text));
+    ms.hz = (uint64_t)(f->hz + 0.5);
+    ms.confidence = f->confidence;
+    cs_strlcpy(ms.raw, f->raw, sizeof(ms.raw));
+    cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
+    cs_strlcpy(ms.path, capture, sizeof(ms.path));
+    cs_strlcpy(ms.shot_name, file_basename(capture), sizeof(ms.shot_name));
+    meter_push_locked(app, &ms);
+    app_log(app,
+            "consensus reading recorded: %llu Hz, frame_ts=%lld extracted=%lld, "
+            "readable=%d stored=%d consensus=%.2f",
+            (unsigned long long)ms.hz, (long long)f->frame_ts_ms,
+            (long long)f->extracted_ms, readable_count, v->frame_count, consensus);
+    app->reader.accepted++;
+    cs_strlcpy(app->reader.capture_path, capture, sizeof(app->reader.capture_path));
+    app->reader.visible = true;
+    app->reader.display_until_ms = cs_now_ms() + 3000;
+    app->reader.hz = (double)ms.hz;
+    app->reader.confidence = ms.confidence;
+    cs_strlcpy(app->reader.raw, ms.raw, sizeof(app->reader.raw));
+    char eng[64];
+    cs_format_eng(ms.hz, eng, sizeof(eng));
+    snprintf(app->reader.status, sizeof(app->reader.status),
+             "Recorded %s · %d stored frames", eng, v->frame_count);
+    v->committed = true;
+    return true;
 }
 
 static void visibility_commit_locked(App *app)
 {
     VisibilitySession *v = &app->visibility;
     if (!v->active) return;
-    if (!v->committed) visibility_emit_locked(app);
+    if (!v->committed) {
+        int readable = 0;
+        double consensus = 0.0;
+        int idx = visibility_pick_locked(app, false, &readable, &consensus);
+        if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable);
+    }
     visibility_reset_locked(app);
 }
 
 static void visibility_try_consensus_locked(App *app)
 {
     VisibilitySession *v = &app->visibility;
-    if (!v->active || v->committed || v->readable_readings < 5) return;
-
-    int first = -1, second = -1;
-    double first_w = -1.0, second_w = -1.0;
-    for (int i = 0; i < v->cluster_count; i++) {
-        VisibilityCluster *c = &v->clusters[i];
-        if (c->count <= 0) continue;
-        if (c->weight > first_w) {
-            second = first;
-            second_w = first_w;
-            first = i;
-            first_w = c->weight;
-        } else if (c->weight > second_w) {
-            second = i;
-            second_w = c->weight;
-        }
-    }
-    if (first < 0) return;
-    VisibilityCluster *c = &v->clusters[first];
-    if (c->count < 4) return;
-    double total = 0.0;
-    for (int i = 0; i < v->cluster_count; i++) total += v->clusters[i].weight;
-    if (total <= 0.0 || c->weight / total < 0.65) return;
-    if (second >= 0 && first_w - second_w < 0.25 * first_w) return;
-    if (visibility_emit_locked(app)) v->committed = true;
+    if (!v->active || v->committed) return;
+    int readable = 0;
+    double consensus = 0.0;
+    int idx = visibility_pick_locked(app, true, &readable, &consensus);
+    if (idx >= 0) visibility_emit_locked(app, idx, consensus, readable);
 }
 
 static void visibility_update_locked(App *app, const MeterReading *r, const uint8_t *rgb,
@@ -228,47 +287,12 @@ static void visibility_update_locked(App *app, const MeterReading *r, const uint
     v->total_readings++;
     if (r->hz <= 0) return;
     v->readable_readings++;
-
-    double quality = (r->confidence > 0 ? r->confidence : 0.5) * 0.7 +
-                     frame_score * 0.3;
-    double tol = visibility_tolerance(r->hz);
-    int ci = -1;
-    double nearest = 1e300;
-    for (int i = 0; i < v->cluster_count; i++) {
-        double d = fabs(r->hz - v->clusters[i].center_hz);
-        if (d <= tol && d < nearest) {
-            nearest = d;
-            ci = i;
-        }
-    }
-    if (ci < 0) {
-        if (v->cluster_count < VIS_CLUSTER_MAX) {
-            ci = v->cluster_count++;
-            memset(&v->clusters[ci], 0, sizeof(v->clusters[ci]));
-            v->clusters[ci].center_hz = r->hz;
-        } else {
-            /* Replace the weakest outlier cluster if this reading is stronger. */
-            int worst = 0;
-            for (int i = 1; i < v->cluster_count; i++)
-                if (v->clusters[i].weight < v->clusters[worst].weight) worst = i;
-            if (quality <= v->clusters[worst].weight) return;
-            free(v->clusters[worst].best.rgb);
-            memset(&v->clusters[worst], 0, sizeof(v->clusters[worst]));
-            ci = worst;
-            v->clusters[ci].center_hz = r->hz;
-        }
-    }
-
-    VisibilityCluster *c = &v->clusters[ci];
-    double old_weight = c->weight;
-    c->weight += quality;
-    c->count++;
-    c->center_hz = (c->center_hz * old_weight + r->hz * quality) / c->weight;
-    if (c->count == 1 || quality > c->best.weight) {
-        int64_t extracted = cs_epoch_ms();
-        visibility_set_candidate(&c->best, r, quality, rgb, w, h, ts, extracted);
-    }
-    visibility_try_consensus_locked(app);
+    int64_t extracted = cs_epoch_ms();
+    /* Keep the complete readable-frame history for the visibility interval,
+     * including frames after consensus; the list is freed when the display
+     * leaves. */
+    visibility_store_frame_locked(v, r, rgb, w, h, ts, frame_score, extracted);
+    if (!v->committed) visibility_try_consensus_locked(app);
 }
 
 void app_add_cell(App *app, const CellSample *sample)
@@ -1549,7 +1573,6 @@ static int SDLCALL cellscope_vlm_thread(void *data)
     App *app = data;
     uint8_t *rgb = NULL;
     int rw = 0, rh = 0;
-    int64_t last_read = 0;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
         bool paused = false;
@@ -1636,12 +1659,6 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         }
 
         bool mock = app->vlm.active == VLM_BACKEND_MOCK;
-        int interval = 700;
-        if (now - last_read < interval) {
-            SDL_Delay(80);
-            continue;
-        }
-
         bool have = false;
         int64_t frame_ts = 0;
         float frame_score = 0;
@@ -1716,11 +1733,10 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         }
         SDL_UnlockMutex(app->mu);
         if (!have) {
-            SDL_Delay(120);
+            SDL_Delay(20);
             continue;
         }
 
-        last_read = now;
         MeterReading r;
         char err[512] = {0};
         int64_t frame_ms = 0;
@@ -1848,9 +1864,9 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 char eng[64];
                 cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
                 snprintf(app->reader.status, sizeof(app->reader.status),
-                         "Screen visible · live %s · %d reads / %d groups", eng,
+                         "Screen visible · live %s · %d reads / %d stored", eng,
                          app->visibility.total_readings,
-                         app->visibility.cluster_count);
+                         app->visibility.frame_count);
             } else {
                 app->reader.live_valid = false;
                 app->reader.live_raw[0] = '\0';
