@@ -82,6 +82,15 @@ static void layout(App *app, Layout *l)
     l->camera = ui_rect(pad + left_w + gap, y, right_w, avail_h);
 }
 
+static void format_mhz_reading(double hz, char *out, size_t cap)
+{
+    if (hz <= 0.0) {
+        cs_strlcpy(out, "—", cap);
+        return;
+    }
+    snprintf(out, cap, "%.4f MHz", hz / 1e6);
+}
+
 static void draw_dot(Ui *ui, float x, float y, UiColor c)
 {
     ui_circle(ui, x, y, 3.2f, c);
@@ -600,20 +609,20 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
             ui_line(ui, cx - 2.0f, cy + 5.0f, cx + 7.5f, cy - 6.0f, check, 2.6f);
         }
         if (consensus) {
-            char eng[64];
-            cs_format_eng((uint64_t)(s->reader.hz + 0.5), eng, sizeof(eng));
+            char mhz[64];
+            format_mhz_reading(s->reader.hz, mhz, sizeof(mhz));
             ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f, UI_TEXT,
-                             lr.w - 24, eng);
+                             lr.w - 24, mhz);
             char sub[96];
             snprintf(sub, sizeof(sub), "CONSENSUS REACHED · CONF %d%%",
                      (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0));
             ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_ACCENT,
                              lr.w - 24, sub);
         } else if (s->reader.live_valid && s->reader.live_hz > 0) {
-            char eng[64];
-            cs_format_eng((uint64_t)(s->reader.live_hz + 0.5), eng, sizeof(eng));
+            char mhz[64];
+            format_mhz_reading(s->reader.live_hz, mhz, sizeof(mhz));
             ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f, UI_TEXT,
-                             lr.w - 24, eng);
+                             lr.w - 24, mhz);
             char sub[96];
             snprintf(sub, sizeof(sub), "LIVE · CONF %d%% · collecting best",
                      (int)(s->reader.live_confidence * 100.0));
@@ -890,7 +899,7 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
 {
     Ui *ui = &app->ui;
     static const ListColumn cols[] = {
-        {"", 30}, {"TIME", 62}, {"SCREENSHOT", 190}, {"FREQUENCY (Hz)", 126},
+        {"", 30}, {"TIME", 62}, {"SCREENSHOT", 190}, {"FREQUENCY (HZ)", 126},
         {"GHz", 92}, {"CONF", 52}, {"BACKEND", 112},
     };
     const int ncols = (int)CS_ARRAY_LEN(cols);
@@ -967,7 +976,7 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
                                  UI_ACCENT);
 
         char hz[64], eng[64], conf[16];
-        cs_format_hz(m.hz, hz, sizeof(hz));
+        cs_group_u64(m.hz, hz, sizeof(hz));
         cs_format_eng(m.hz, eng, sizeof(eng));
         snprintf(conf, sizeof(conf), "%d%%", (int)(m.confidence * 100.0));
         const char *shot = ui_shot_name(&m);
