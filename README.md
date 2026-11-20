@@ -182,6 +182,8 @@ Everything the app downloads lives there:
 
 - `runtime/` — private Python, packages, `uv`, caches, `runtime/minimind/`
   (code copy plus downloaded MiniMind assets);
+- `runtime/venv/` — the base MiniMind environment plus one isolated
+  `runtime/venv/<owner__model>/` environment per downloaded HF model;
 - `runtime/hf-models/` — downloaded Hugging Face snapshots;
 - `settings.json` — app settings;
 - `training/` — training output by default;
@@ -233,15 +235,27 @@ cellscope --download-model HuggingFaceTB/SmolVLM-256M-Instruct
 
 The command:
 
-1. prepares CellScope's private Python runtime;
+1. prepares CellScope's base private Python runtime;
 2. downloads the full model snapshot into
    `~/.cellscope/runtime/hf-models/` (or the platform equivalent);
-3. writes `settings.json` with the repo id, local snapshot path, port, and
+3. inspects the snapshot's `config.json` and model card for the required Python
+   and Transformers generation;
+4. creates a dedicated environment at
+   `~/.cellscope/runtime/venv/<owner__model>/`, installing that Python version
+   and the matching `transformers` requirement plus the common vision stack;
+5. verifies the environment imports;
+6. writes `settings.json` with the repo id, local snapshot path, port, and
    device;
-4. exits.
+7. exits.
 
-The next launch starts `scripts/serve_hf_vlm.py` with that snapshot and uses it
-for the webcam reading. The bridge is a generic local Transformers server; it
+For example, `zai-org/GLM-OCR` declares Transformers 5.17 metadata, so its
+CellScope environment installs Python 3.10+ and `transformers>=5.17,<6` without
+touching the base 4.57 environment used by MiniMind. SmolVLM uses its own
+environment with Transformers 4.57.6. If model preparation fails, the model is
+left downloaded but `settings.json` is not switched to it.
+
+The next launch starts `scripts/serve_hf_vlm.py` with that snapshot **and that
+model's interpreter** and uses it for the webcam reading. The bridge is a generic local Transformers server; it
 is not an OpenAI cloud call. Supported token aliases are `HF_TOKEN`,
 `HUGGINGFACE_HUB_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`,
 `HUGGINGFACE_API_KEY`, `HF_API_KEY`, and `HF_API_TOKEN`. Public models work
@@ -267,7 +281,9 @@ Set `reader_backend` back to `"minimind"` (or delete the file) to return to the
 MiniMind runtime. `hf_device` accepts `auto`, `cpu`, `mps`, or `cuda:0`;
 `hf_port` defaults to 8091. Not every Hugging Face VLM architecture is
 compatible; the bridge uses `AutoProcessor` plus
-`AutoModelForImageTextToText`/`AutoModelForVision2Seq`. It was tested with
+`AutoModelForImageTextToText`/`AutoModelForVision2Seq`. Model-specific Python
+and Transformers versions are provisioned automatically, but an architecture
+still needs a compatible bridge processor/prompt. It was tested with
 SmolVLM-256M-Instruct.
 
 Optional external tiny VLM (Ollama):

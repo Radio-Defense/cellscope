@@ -1279,6 +1279,17 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
         }
 
         bool hf = hf_usable;
+        bool hf_env_ready = false;
+        if (hf) {
+            char eerr[512] = {0};
+            hf_env_ready = runtime_select_hf_env(rt, app->settings.hf_model, eerr,
+                                                 sizeof(eerr));
+            if (!hf_env_ready)
+                app_log(app, "HF model environment unavailable (%s); using base runtime",
+                        eerr[0] ? eerr : "not prepared");
+            else
+                app_log(app, "using model-specific Python: %s", rt->hf_python);
+        }
         char label[192];
         char model_id[64] = "minimind-meter";
         char script[CS_PATH_MAX], log[CS_PATH_MAX];
@@ -1336,7 +1347,8 @@ static int SDLCALL cellscope_bootstrap_thread(void *data)
         char serr[1024] = {0};
         bool started = false;
         if (hf) {
-            started = server_start_hf(&app->server, rt->python, script,
+            started = server_start_hf(&app->server,
+                                      hf_env_ready ? rt->hf_python : rt->python, script,
                                       app->settings.hf_model_path, port,
                                       app->settings.hf_device, log, serr, sizeof(serr));
         } else {

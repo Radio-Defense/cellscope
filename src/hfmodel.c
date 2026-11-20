@@ -132,6 +132,18 @@ int hf_model_download(const char *repo, RuntimeProgressFn cb, void *ctx, char *e
         return 5;
     }
 
+    printf("\nPreparing the model-specific Python environment…\n");
+    fflush(stdout);
+    if (!runtime_ensure_hf_env(&rt, repo, dest, cb, ctx, err, err_cap)) {
+        char env_err[1024];
+        cs_strlcpy(env_err, err, sizeof(env_err));
+        snprintf(err, err_cap,
+                 "Model downloaded, but its Python environment could not be prepared: %s",
+                 env_err[0] ? env_err : "unknown error");
+        return 7;
+    }
+    printf("Model environment: %s\n", rt.hf_venv);
+
     if (!settings_set_hf(&settings, repo, dest, settings.hf_port, err, err_cap)) {
         return 6;
     }

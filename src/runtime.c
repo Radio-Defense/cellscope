@@ -26,6 +26,9 @@
 #include <unistd.h>
 #endif
 
+static int run_rt(PythonRuntime *rt, const char *cwd, const char *const argv[],
+                  int timeout_ms, char *out, size_t out_cap, char *err, size_t err_cap);
+
 typedef struct {
     FILE *f;
     PythonRuntime *rt;
@@ -329,6 +332,235 @@ bool runtime_init(PythonRuntime *rt, const char *project_root, char *err, size_t
     rt_log(rt, "project root: %s", rt->project_root);
     rt_log(rt, "minimind: %s", rt->minimind);
     rt_log(rt, "training: %s", rt->training);
+    return true;
+}
+
+static void model_env_name(const char *repo, char *out, size_t cap)
+{
+    if (!out || cap == 0) return;
+    size_t o = 0;
+    for (const char *p = repo ? repo : ""; *p && o + 1 < cap; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.') out[o++] = (char)c;
+        else if (c == '/') {
+            if (o + 3 >= cap) break;
+            out[o++] = '_';
+            out[o++] = '_';
+        } else out[o++] = '_';
+    }
+    out[o ? o : 0] = '\0';
+    if (!o) cs_strlcpy(out, "model", cap);
+}
+
+void runtime_model_env_paths(const PythonRuntime *rt, const char *repo, char *venv,
+                             size_t venv_cap, char *python, size_t python_cap,
+                             char *marker, size_t marker_cap)
+{
+    char root[CS_PATH_MAX], safe[512];
+    cs_path_join(root, sizeof(root), rt->dir, "venv");
+    model_env_name(repo, safe, sizeof(safe));
+    cs_path_join(venv, venv_cap, root, safe);
+    cs_path_join(python, python_cap, venv,
+#ifdef _WIN32
+                 "Scripts/python.exe");
+#else
+                 "bin/python");
+#endif
+    cs_path_join(marker, marker_cap, venv, "cellscope-model-env.txt");
+}
+
+static bool read_spec_value(const char *path, const char *key, char *out, size_t cap)
+{
+    if (!path || !key || !out || cap == 0) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char line[4096];
+    size_t klen = strlen(key);
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, key, klen) == 0 && line[klen] == '=') {
+            char *v = line + klen + 1;
+            size_t n = strlen(v);
+            while (n && (v[n - 1] == '\n' || v[n - 1] == '\r')) v[--n] = '\0';
+            cs_strlcpy(out, v, cap);
+            found = true;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+bool runtime_select_hf_env(PythonRuntime *rt, const char *repo, char *err, size_t err_cap)
+{
+    rt->hf_env_ready = false;
+    rt->hf_venv[0] = rt->hf_python[0] = rt->hf_env_marker[0] = '\0';
+    if (!repo || !*repo) return false;
+    runtime_model_env_paths(rt, repo, rt->hf_venv, sizeof(rt->hf_venv),
+                            rt->hf_python, sizeof(rt->hf_python),
+                            rt->hf_env_marker, sizeof(rt->hf_env_marker));
+    char pyver[32], spec[128];
+    if (!cs_file_exists(rt->hf_python) || !cs_file_exists(rt->hf_env_marker)) {
+        if (err && err_cap)
+            snprintf(err, err_cap, "No model-specific environment at %s", rt->hf_venv);
+        return false;
+    }
+    char marked_repo[512] = "";
+    if (!read_spec_value(rt->hf_env_marker, "version", pyver, sizeof(pyver)) ||
+        strcmp(pyver, "1") != 0 ||
+        !read_spec_value(rt->hf_env_marker, "transformers_spec", spec, sizeof(spec))) {
+        if (err && err_cap) snprintf(err, err_cap, "Invalid model environment marker: %s",
+                                     rt->hf_env_marker);
+        return false;
+    }
+    if (read_spec_value(rt->hf_env_marker, "repo", marked_repo, sizeof(marked_repo)) &&
+        marked_repo[0] && strcmp(marked_repo, repo) != 0) {
+        if (err && err_cap) snprintf(err, err_cap, "Model environment belongs to %s",
+                                     marked_repo);
+        return false;
+    }
+    rt->hf_env_ready = true;
+    return true;
+}
+
+bool runtime_ensure_hf_env(PythonRuntime *rt, const char *repo, const char *model_path,
+                           RuntimeProgressFn cb, void *ctx, char *err, size_t err_cap)
+{
+    if (err && err_cap) err[0] = '\0';
+    if (runtime_select_hf_env(rt, repo, NULL, 0)) {
+        rt_progress(rt, RT_STAGE_PACKAGES, 100, "Model-specific Python environment is ready",
+                    cb, ctx);
+        return true;
+    }
+    if (!rt->uv[0] || !cs_file_exists(rt->uv)) {
+        snprintf(err, err_cap, "uv is not installed in the base CellScope runtime");
+        return false;
+    }
+    if (!rt->scripts[0] || !model_path || !*model_path) {
+        snprintf(err, err_cap, "Missing model path or scripts directory");
+        return false;
+    }
+
+    char venv[CS_PATH_MAX], python[CS_PATH_MAX], marker[CS_PATH_MAX];
+    runtime_model_env_paths(rt, repo, venv, sizeof(venv), python, sizeof(python), marker,
+                            sizeof(marker));
+    cs_mkdirs(venv);
+    char spec_path[CS_PATH_MAX];
+    cs_path_join(spec_path, sizeof(spec_path), venv, "model-requirements.txt");
+    char tool[CS_PATH_MAX];
+    cs_path_join(tool, sizeof(tool), rt->scripts, "hf_model_env.py");
+    if (!cs_file_exists(tool)) {
+        snprintf(err, err_cap, "hf_model_env.py was not found in %s", rt->scripts);
+        return false;
+    }
+
+    rt_progress(rt, RT_STAGE_PACKAGES, 70,
+                "Inspecting Hugging Face model metadata for its environment…", cb, ctx);
+    char out[32768], perr[1024];
+    const char *probe[] = {rt->python, tool, "--snapshot", model_path, "--out", spec_path,
+                           "--repo", repo, NULL};
+    if (run_rt(rt, rt->dir, probe, 120000, out, sizeof(out), perr, sizeof(perr)) != 0) {
+        snprintf(err, err_cap, "Could not inspect the model environment: %s", perr);
+        return false;
+    }
+
+    char pyver[32] = "3.11", tfspec[128] = "4.57.6", packages[2048] = "";
+    char model_type[128] = "", arch[256] = "", reason[512] = "";
+    read_spec_value(spec_path, "python", pyver, sizeof(pyver));
+    read_spec_value(spec_path, "transformers_spec", tfspec, sizeof(tfspec));
+    read_spec_value(spec_path, "packages", packages, sizeof(packages));
+    read_spec_value(spec_path, "model_type", model_type, sizeof(model_type));
+    read_spec_value(spec_path, "architecture", arch, sizeof(arch));
+    read_spec_value(spec_path, "reason", reason, sizeof(reason));
+
+    rt_progress(rt, RT_STAGE_PACKAGES, 72,
+                "Installing the model-specific Python version…", cb, ctx);
+    const char *pyinst[] = {rt->uv, "python", "install", pyver, NULL};
+    if (run_rt(rt, rt->dir, pyinst, 900000, out, sizeof(out), perr, sizeof(perr)) != 0) {
+        snprintf(err, err_cap, "Could not install Python %s: %s", pyver, perr);
+        return false;
+    }
+    rt_progress(rt, RT_STAGE_PACKAGES, 76, "Creating the model-specific virtual environment…",
+                cb, ctx);
+    const char *vargv[] = {rt->uv, "venv", "--python", pyver, "--clear", "--force", venv,
+                           NULL};
+    if (run_rt(rt, rt->dir, vargv, 300000, out, sizeof(out), perr, sizeof(perr)) != 0) {
+        snprintf(err, err_cap, "Could not create the model virtual environment: %s", perr);
+        return false;
+    }
+    if (!cs_file_exists(python)) {
+        snprintf(err, err_cap, "Model environment is missing %s", python);
+        return false;
+    }
+
+    rt_progress(rt, RT_STAGE_PACKAGES, 80,
+                "Installing model-specific Python packages (first time may take minutes)…",
+                cb, ctx);
+    char tfarg[160];
+    if (isdigit((unsigned char)tfspec[0])) snprintf(tfarg, sizeof(tfarg), "transformers==%s", tfspec);
+    else snprintf(tfarg, sizeof(tfarg), "transformers%s", tfspec);
+    const char *argv[64];
+    int n = 0;
+    argv[n++] = rt->uv;
+    argv[n++] = "pip";
+    argv[n++] = "install";
+    argv[n++] = "--python";
+    argv[n++] = python;
+    argv[n++] = "torch";
+    argv[n++] = "torchvision";
+    argv[n++] = tfarg;
+    argv[n++] = "accelerate";
+    argv[n++] = "safetensors";
+    argv[n++] = "huggingface_hub";
+    argv[n++] = "sentencepiece";
+    argv[n++] = "protobuf";
+    argv[n++] = "timm";
+    argv[n++] = "einops";
+    argv[n++] = "Pillow";
+    argv[n++] = "numpy";
+    /* Extra packages from the metadata (comma-separated). */
+    if (packages[0]) {
+        char buf[2048];
+        cs_strlcpy(buf, packages, sizeof(buf));
+        char *save = NULL;
+        for (char *p = strtok_r(buf, ", ", &save); p && n < 62;
+             p = strtok_r(NULL, ", ", &save)) {
+            if (!strcmp(p, "torch") || !strcmp(p, "torchvision") ||
+                !strcmp(p, "accelerate") || !strcmp(p, "safetensors") ||
+                !strcmp(p, "huggingface_hub") || !strcmp(p, "sentencepiece") ||
+                !strcmp(p, "protobuf") || !strcmp(p, "timm") || !strcmp(p, "einops") ||
+                !strcmp(p, "Pillow") || !strcmp(p, "numpy"))
+                continue;
+            argv[n++] = p;
+        }
+    }
+    argv[n] = NULL;
+    if (run_rt(rt, rt->dir, argv, 7200000, out, sizeof(out), perr, sizeof(perr)) != 0) {
+        snprintf(err, err_cap, "Model package installation failed: %s", perr);
+        return false;
+    }
+
+    rt_progress(rt, RT_STAGE_PACKAGES, 96, "Verifying the model-specific environment…", cb,
+                ctx);
+    const char *verify[] = {python, "-c",
+                            "import torch, transformers, accelerate, PIL; "
+                            "print(torch.__version__, transformers.__version__)",
+                            NULL};
+    if (run_rt(rt, rt->dir, verify, 120000, out, sizeof(out), perr, sizeof(perr)) != 0) {
+        snprintf(err, err_cap, "Model environment verification failed: %s", perr);
+        return false;
+    }
+    char marker_body[4096];
+    snprintf(marker_body, sizeof(marker_body),
+             "version=1\nrepo=%s\npython=%s\ntransformers_spec=%s\nmodel_type=%s\n"
+             "architecture=%s\npackages=%s\nreason=%s\n",
+             repo, pyver, tfspec, model_type, arch, packages, reason);
+    if (!cs_write_file(marker, marker_body, strlen(marker_body))) {
+        snprintf(err, err_cap, "Could not write model environment marker: %s", marker);
+        return false;
+    }
+    if (!runtime_select_hf_env(rt, repo, err, err_cap)) return false;
+    rt_progress(rt, RT_STAGE_PACKAGES, 100, "Model-specific environment ready", cb, ctx);
     return true;
 }
 
