@@ -1,50 +1,5 @@
 # CellScope
 
-CellScope was written to prove the use of directed energy on individuals,
-following the measurement study *The 2.5 GHz measurement* (report
-A-2026-11-19-R).
-
-A cross-platform desktop C application that watches an Android phone's cellular
-state and a webcam at the same time.
-
-- **Left:** live cell samples polled from `adb` once per second (PLMN, MCC/MNC,
-  TAC, eNB/CID, PCI, timing advance, NR/LTE ARFCN, band, bandwidth, CA,
-  downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
-  and their RSSI in dBm.
-- **Right side:** full-height preview from the webcam attached to the local
-  machine (never the Android phone), with a corner-only alignment guide and a
-  lower-right **LIVE DETECTION** box. The box shows live readings, then a green
-  check and the consensus value for three seconds. Setup/folder controls are
-  overlaid here; there is no separate meter-reader pane and no last-capture
-  thumbnail.
-- **Left side:** two Finder-style grid lists stacked vertically. Both have
-  fixed column headers, zebra rows, and vertical/horizontal scrollbars as
-  needed. **CELL SAMPLES** exposes time, operator, band, RAT, PCI, ARFCN,
-  downlink/uplink frequencies, TAC, eNB/CID, bandwidth and CA; **READINGS**
-  exposes timestamp, screenshot filename, Hz, confidence and backend.
-  Each reading row starts with a small **×** action; it asks for confirmation in
-  a modal before removing that entry from the current session.
-- **Top centre:** a large play/pause control. CellScope starts paused: the
-  webcam, ADB polling, VLM extraction, dataset session and table stay idle until
-  you press play. The window opens maximized with its normal title bar visible;
-  the UI uses a 1440×900 logical layout, letterboxed on other aspect ratios.
-- **On launch:** a step-by-step modal explains how to connect the phone over
-  ADB. It only disappears when a device is authorized; failures show concrete
-  fixes.
-- **First run:** CellScope installs its own private Python runtime, ML packages,
-  and MiniMind assets, then starts the local reader bridge in the background.
-  A downloaded Hugging Face model recorded in `settings.json` takes precedence.
-
-Camera frames and readings stay local. Webcam frames are converted to RGB24,
-scaled to at most 1024 px wide with preserved aspect ratio, PNG-encoded, and sent
-as a data URL. The HF bridge decodes them as RGB and preserves the processor's
-the processor's image inputs and attention mask; the GLM-OCR path uses its own
-chat template and `Text Recognition:` prompt. No
-telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
-releases, ModelScope, and Hugging Face if you download an HF model.
-
-![CellScope with simulated connected phone data and GLM-OCR meter reading](docs/screenshot-main.png)
-
 ## Origin and research mission
 
 CellScope was created by **Daniel R. Azulay** for **Radio Defense** to make the
@@ -134,6 +89,49 @@ that such a system would ingest. What scale provides is **generalization and
 independent replication** — the ability to show that the result is not an
 artifact of one observer, one instrument or one network, and to narrow the
 remaining physical uncertainty with evidence from around the world.
+
+## Overview
+
+A cross-platform desktop C application that watches an Android phone's cellular
+state and a webcam at the same time.
+
+- **Left:** live cell samples polled from `adb` once per second (PLMN, MCC/MNC,
+  TAC, eNB/CID, PCI, timing advance, NR/LTE ARFCN, band, bandwidth, CA,
+  downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
+  and their RSSI in dBm.
+- **Right side:** full-height preview from the webcam attached to the local
+  machine (never the Android phone), with a corner-only alignment guide and a
+  lower-right **LIVE DETECTION** box. The box shows live readings, then a green
+  check and the consensus value for three seconds. Setup/folder controls are
+  overlaid here; there is no separate meter-reader pane and no last-capture
+  thumbnail.
+- **Left side:** two Finder-style grid lists stacked vertically. Both have
+  fixed column headers, zebra rows, and vertical/horizontal scrollbars as
+  needed. **CELL SAMPLES** exposes time, operator, band, RAT, PCI, ARFCN,
+  downlink/uplink frequencies, TAC, eNB/CID, bandwidth and CA; **READINGS**
+  exposes timestamp, screenshot filename, Hz, confidence and backend.
+  Each reading row starts with a small **×** action; it asks for confirmation in
+  a modal before removing that entry from the current session.
+- **Top centre:** a large play/pause control. CellScope starts paused: the
+  webcam, ADB polling, VLM extraction, dataset session and table stay idle until
+  you press play. The window opens maximized with its normal title bar visible;
+  the UI uses a 1440×900 logical layout, letterboxed on other aspect ratios.
+- **On launch:** a step-by-step modal explains how to connect the phone over
+  ADB. It only disappears when a device is authorized; failures show concrete
+  fixes.
+- **First run:** CellScope installs its own private Python runtime, ML packages,
+  and MiniMind assets, then starts the local reader bridge in the background.
+  A downloaded Hugging Face model recorded in `settings.json` takes precedence.
+
+Camera frames and readings stay local. Webcam frames are converted to RGB24,
+scaled to at most 1024 px wide with preserved aspect ratio, PNG-encoded, and sent
+as a data URL. The HF bridge decodes them as RGB and preserves the processor's
+the processor's image inputs and attention mask; the GLM-OCR path uses its own
+chat template and `Text Recognition:` prompt. No
+telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
+releases, ModelScope, and Hugging Face if you download an HF model.
+
+![CellScope with simulated connected phone data and GLM-OCR meter reading](docs/screenshot-main.png)
 
 ## Stack
 
