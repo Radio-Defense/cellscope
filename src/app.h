@@ -162,6 +162,7 @@ typedef struct App {
 typedef enum {
     APP_ARGS_OK = 0,
     APP_ARGS_HELP,
+    APP_ARGS_VERSION,
     APP_ARGS_ERROR
 } AppArgsResult;
 

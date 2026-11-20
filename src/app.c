@@ -253,7 +253,7 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             return APP_ARGS_HELP;
         } else if (strcmp(a, "--version") == 0) {
             printf("CellScope %s\n", CELLSCOPE_VERSION);
-            return APP_ARGS_HELP;
+            return APP_ARGS_VERSION;
         } else if (strcmp(a, "--train") == 0 && i + 1 < argc) {
             cs_strlcpy(app->train.dataset_dir, argv[++i],
                        sizeof(app->train.dataset_dir));
