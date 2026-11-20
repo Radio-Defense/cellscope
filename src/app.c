@@ -99,6 +99,8 @@ static void visibility_commit_locked(App *app)
                 (unsigned long long)ms.hz, ms.backend, ms.confidence, v->best_quality);
         app->reader.accepted++;
         cs_strlcpy(app->reader.capture_path, capture, sizeof(app->reader.capture_path));
+        app->reader.visible = true;
+        app->reader.display_until_ms = cs_now_ms() + 3000;
         app->reader.hz = (double)ms.hz;
         app->reader.confidence = ms.confidence;
         cs_strlcpy(app->reader.raw, ms.raw, sizeof(app->reader.raw));
@@ -116,7 +118,6 @@ static void visibility_update_locked(App *app, const MeterReading *r, const uint
     VisibilitySession *v = &app->visibility;
     if (!r->visible) {
         visibility_commit_locked(app);
-        app->reader.visible = false;
         return;
     }
     if (!v->active) {
@@ -901,6 +902,22 @@ void app_update(App *app)
         else if (export_result == 2) app_notify(app, true, "Could not open the save dialog.");
     }
 
+    SDL_LockMutex(app->mu);
+    if (app->reader.visible && app->reader.display_until_ms > 0 &&
+        now >= app->reader.display_until_ms) {
+        app->reader.visible = false;
+        app->reader.display_until_ms = 0;
+        app->reader.hz = 0;
+        app->reader.confidence = 0;
+        app->reader.raw[0] = '\0';
+        if (!app->reader.screen_visible)
+            cs_strlcpy(app->reader.status,
+                       app->paused ? "Paused — press play to resume"
+                                   : "Watching for a display…",
+                       sizeof(app->reader.status));
+    }
+    SDL_UnlockMutex(app->mu);
+
     RuntimeView rv;
     SDL_LockMutex(app->mu);
     rv = app->runtime_view;
@@ -1531,10 +1548,15 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             if (mock)
                 cs_strlcpy(app->reader.status, "Reading synthetic frame…",
                            sizeof(app->reader.status));
-            else
-                snprintf(app->reader.status, sizeof(app->reader.status),
-                         "Read best of %d frames · quality %d%%", app->reader.burst_count,
-                         (int)(frame_score * 100.0f));
+            else if (app->reader.display_until_ms == 0) {
+                if (app->reader.screen_visible)
+                    snprintf(app->reader.status, sizeof(app->reader.status),
+                             "Read best of %d frames · quality %d%%",
+                             app->reader.burst_count, (int)(frame_score * 100.0f));
+                else
+                    cs_strlcpy(app->reader.status, "Watching for a display…",
+                               sizeof(app->reader.status));
+            }
         } else if (!mock) {
             if (app->burst_count == 0)
                 cs_strlcpy(app->reader.status, "Point a meter screen at the guide",
@@ -1567,6 +1589,8 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         if (!ok) {
             SDL_LockMutex(app->mu);
             app->reader.busy = false;
+            app->reader.live_valid = false;
+            app->reader.live_raw[0] = '\0';
             cs_strlcpy(app->reader.error, err, sizeof(app->reader.error));
             cs_strlcpy(app->reader.status, "No reading — adjust the meter", sizeof(app->reader.status));
             SDL_UnlockMutex(app->mu);
@@ -1580,6 +1604,8 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 SDL_LockMutex(app->mu);
                 app->reader.busy = false;
                 app->reader.visible = false;
+                app->reader.screen_visible = false;
+                app->reader.live_valid = false;
                 app->reader.error[0] = '\0';
                 cs_strlcpy(app->reader.status, "Watching for a display…",
                            sizeof(app->reader.status));
@@ -1599,12 +1625,14 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             int stable = meter_tracker_stable(&app->tracker);
             SDL_LockMutex(app->mu);
             app->reader.busy = false;
-            app->reader.visible = true;
-            app->reader.hz = r.hz;
-            app->reader.confidence = r.confidence;
+            app->reader.screen_visible = true;
+            app->reader.live_valid = true;
+            app->reader.live_hz = r.hz;
+            app->reader.live_confidence = r.confidence;
+            app->reader.live_ms = frame_ts ? frame_ts : (frame_ms ? frame_ms : cs_epoch_ms());
+            cs_strlcpy(app->reader.live_raw, r.raw, sizeof(app->reader.live_raw));
             app->reader.stable = stable;
             app->reader.last_ok_ms = cs_epoch_ms();
-            cs_strlcpy(app->reader.raw, r.raw, sizeof(app->reader.raw));
             cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
             app->reader.error[0] = '\0';
             if (action == METER_TRACK_RECORD) {
@@ -1619,6 +1647,11 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 ms.demo = true;
                 meter_push_locked(app, &ms);
                 app->reader.accepted++;
+                app->reader.visible = true;
+                app->reader.display_until_ms = cs_now_ms() + 3000;
+                app->reader.hz = r.hz;
+                app->reader.confidence = r.confidence;
+                cs_strlcpy(app->reader.raw, r.raw, sizeof(app->reader.raw));
                 char eng[64];
                 cs_format_eng(ms.hz, eng, sizeof(eng));
                 snprintf(app->reader.status, sizeof(app->reader.status), "Recorded %s", eng);
@@ -1640,23 +1673,39 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
         app->reader.error[0] = '\0';
         if (!r.visible) {
+            app->reader.screen_visible = false;
+            app->reader.live_valid = false;
+            app->reader.live_raw[0] = '\0';
             cs_strlcpy(app->reader.status, "No device screen visible — watching",
                        sizeof(app->reader.status));
             visibility_update_locked(app, &r, NULL, 0, 0, best_frame_ts, frame_score);
-            app->reader.visible = false;
+            app->reader.live_hz = 0;
+            app->reader.live_confidence = 0;
         } else {
-            app->reader.visible = true;
+            if (!app->reader.screen_visible) {
+                /* A new visibility event: right-top must show nothing until
+                 * the best frame has been chosen. */
+                app->reader.screen_visible = true;
+                app->reader.visible = false;
+                app->reader.display_until_ms = 0;
+                app->reader.hz = 0;
+                app->reader.confidence = 0;
+                app->reader.raw[0] = '\0';
+            }
             visibility_update_locked(app, &r, rgb, rw, rh, best_frame_ts, frame_score);
             if (r.hz > 0) {
-                app->reader.hz = r.hz;
-                app->reader.confidence = r.confidence;
-                cs_strlcpy(app->reader.raw, r.raw, sizeof(app->reader.raw));
+                app->reader.live_valid = true;
+                app->reader.live_hz = r.hz;
+                app->reader.live_confidence = r.confidence;
+                app->reader.live_ms = best_frame_ts;
+                cs_strlcpy(app->reader.live_raw, r.raw, sizeof(app->reader.live_raw));
                 char eng[64];
                 cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
                 snprintf(app->reader.status, sizeof(app->reader.status),
-                         "Screen visible · best %s · q=%d%%", eng,
-                         (int)(app->visibility.best_quality * 100.0));
+                         "Screen visible · live %s · collecting best", eng);
             } else {
+                app->reader.live_valid = false;
+                app->reader.live_raw[0] = '\0';
                 cs_strlcpy(app->reader.status,
                            "Device screen visible — hold steady for readable digits",
                            sizeof(app->reader.status));
@@ -1687,6 +1736,9 @@ void app_toggle_pause(App *app)
     bool session_ok = true;
     if (pause_now) {
         app->paused = true;
+        app->reader.screen_visible = false;
+        app->reader.live_valid = false;
+        app->reader.live_raw[0] = '\0';
         visibility_commit_locked(app);
         session_end_locked(app);
         app->reader.busy = false;

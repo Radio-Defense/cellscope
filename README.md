@@ -8,11 +8,11 @@ state and a webcam at the same time.
   downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
   and their RSSI in dBm.
 - **Top left:** preview from the webcam attached to the local machine (never
-  the Android phone), with a meter alignment guide.
-- **Top right:** best-frame frequency reader. It continuously captures a rolling
-  burst of frames while ADB transfers run, scores them for legibility, and sends
-  the sharpest unused frame to a local vision-language model. The reading is
-  parsed, converted to Hz, and the exact frame is saved.
+  the Android phone), with a meter alignment guide. While a device screen is
+  visible, a live card shows the reading extracted from every processed frame.
+- **Top right:** best-result reader. It shows nothing while a screen is being
+  collected, then displays the selected best extraction for **3 seconds**. The
+  value is converted to Hz, and the exact best frame is saved.
 - **Bottom right:** timestamped frequency readings, each with the filename of
   its saved screenshot.
 - **Top centre:** a large play/pause control for both the local webcam pipeline
@@ -286,9 +286,12 @@ that the screen may be rotated or mirrored, and that `visible` means a device
 screen is present even when the digits are temporarily unreadable (then
 `reading` is empty). The model reads the displayed value; it does not convert
 it. `reading + unit` is converted to Hz in C for `Hz`, `kHz`, `MHz`, and `GHz`.
-If a bare number has no unit, `--unit` (default `MHz`) is used. There is no
-fallback reader: if no VLM is available, CellScope shows that the reader is
-offline and does not invent a frequency.
+If a bare number has no unit, `--unit` (default `MHz`) is used. The prompt also
+tells the VLM to treat every frame independently: never repeat an earlier
+frame's value, never wait for a stable value, and never choose the best reading
+itself. The host displays every frame's result on the left and selects the best
+later. There is no fallback reader: if no VLM is available, CellScope shows that
+the reader is offline and does not invent a frequency.
 
 ### Burst capture and best-frame selection
 
@@ -305,10 +308,21 @@ scores each frame's central guide area for:
 The reader consumes the highest-scoring unused frame, with a score threshold so
 a blank wall does not trigger the VLM. A visibility event starts when the VLM
 reports `visible:true` and ends when it reports `visible:false` (or when capture
-is paused/stopped). During one event, CellScope keeps the extraction with the
-best combined confidence and frame quality. Only that best extraction is added
-to the readings table, using its frame timestamp and a screenshot of that exact
-frame. The UI shows `burst 12/12 · best 90%`.
+is paused/stopped). During the event:
+
+- the **left-top live card** updates with every frame's extracted reading;
+- the **right-top pane stays blank**, showing `—` and “collecting”;
+- CellScope keeps the extraction with the best combined confidence and frame
+  quality;
+- when the screen disappears, the best extraction is inserted into the
+  bottom-right table with its frame timestamp and screenshot filename;
+- the right-top pane displays that best value for **3 seconds**, then clears.
+
+The UI shows `burst 12/12 · best 90%`.
+
+![Live per-frame reading](docs/screenshot-live-reading.png)
+
+![Best result after the screen leaves](docs/screenshot-best-result.png)
 
 ### Capture sessions and datasets
 

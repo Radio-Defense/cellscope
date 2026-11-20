@@ -29,7 +29,10 @@ DEFAULT_PROMPT = (
     "names, channel names, timers, battery icons, voltage, power, signal strength, and "
     "other numeric labels. Never invent or autocorrect digits. Determine the unit "
     "printed with the value: Hz, kHz, MHz or GHz. Do not convert the value; CellScope "
-    "converts reading + unit to Hz. Respond with JSON only, no markdown, exactly:\n"
+    "converts reading + unit to Hz. Report this frame independently: never repeat a "
+    "previous frame's value, never wait for a stable value, and never choose a best "
+    "reading yourself. The host displays every frame's result and selects the best "
+    "afterwards. Respond with JSON only, no markdown, exactly:\n"
     '{"visible":true,"reading":"123.456789","unit":"MHz","confidence":0.93}\n'
     "visible=true means a device screen is visible in the frame, even if the digits "
     'are temporarily unreadable; in that case set reading to "". Use visible=false '

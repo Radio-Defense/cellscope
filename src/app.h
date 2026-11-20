@@ -71,7 +71,14 @@ typedef struct {
 
 typedef struct {
     bool busy;
-    bool visible;
+    bool visible;          /* best result is currently displayed */
+    bool screen_visible;   /* VLM currently sees a device screen */
+    bool live_valid;
+    double live_hz;
+    double live_confidence;
+    int64_t live_ms;
+    int64_t display_until_ms;
+    char live_raw[256];
     int64_t last_attempt_ms;
     int64_t last_ok_ms;
     double hz;

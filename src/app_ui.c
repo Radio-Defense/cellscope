@@ -344,7 +344,8 @@ static void draw_guide(Ui *ui, UiRect preview, const UiState *s)
     float gh = preview.h * 0.50f;
     UiRect g = ui_rect(preview.x + (preview.w - gw) / 2, preview.y + (preview.h - gh) / 2, gw,
                        gh);
-    UiColor col = s->reader.visible ? UI_ACCENT : UI_COLOR(180, 220, 205, 155);
+    UiColor col = s->reader.screen_visible ? UI_ACCENT
+                                           : UI_COLOR(180, 220, 205, 155);
     float len = 20, th = 2;
     /* Four corner brackets. */
     ui_line(ui, g.x, g.y, g.x + len, g.y, col, th);
@@ -549,13 +550,38 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                        "Space or the top play button resumes");
     }
 
+    /* Live per-frame reading shown on the webcam pane while the screen is
+     * visible. The right-top pane stays blank until a best frame is chosen. */
+    if (s->reader.screen_visible) {
+        float cw = CS_MIN(260.0f, p.w * 0.34f);
+        UiRect lr = ui_rect(p.x + p.w - cw - 12, p.y + p.h - 136, cw, 82);
+        ui_round_rect(ui, lr, 9, UI_COLOR(4, 9, 12, 225));
+        ui_rect_outline(ui, lr, UI_COLOR(55, 92, 84, 220), 1);
+        ui_text_font(ui, FONT_SEMIBOLD, lr.x + 12, lr.y + 9, 7.2f, UI_ACCENT,
+                     "LIVE FRAME READ");
+        if (s->reader.live_valid && s->reader.live_hz > 0) {
+            char eng[64];
+            cs_format_eng((uint64_t)(s->reader.live_hz + 0.5), eng, sizeof(eng));
+            ui_text_ellipsis(ui, FONT_MONO, lr.x + 12, lr.y + 24, 18.0f, UI_TEXT,
+                             lr.w - 24, eng);
+            char sub[64];
+            snprintf(sub, sizeof(sub), "CONF %d%% · collecting best",
+                     (int)(s->reader.live_confidence * 100.0));
+            ui_text_font(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_FAINT, sub);
+        } else {
+            ui_text_font(ui, FONT_MONO, lr.x + 12, lr.y + 26, 20.0f, UI_FAINT, "—");
+            ui_text_font(ui, FONT_MONO, lr.x + 12, lr.y + 58, 7.6f, UI_FAINT,
+                         "screen visible · reading next frame");
+        }
+    }
+
     /* Reader status strip inside the preview. */
     if (!app->demo) {
         UiRect st = ui_rect(p.x + 12, p.y + p.h - 40, CS_MIN(p.w - 24, 390), 28);
         ui_round_rect(ui, st, 8, UI_COLOR(5, 9, 13, 215));
         UiColor sc = s->reader.error[0] ? UI_RED
-                     : s->reader.visible    ? UI_ACCENT
-                                            : UI_MUTED;
+                     : (s->reader.screen_visible || s->reader.visible) ? UI_ACCENT
+                                                                       : UI_MUTED;
         draw_dot(ui, st.x + 12, st.y + 14, sc);
         char status[160];
         cs_strlcpy(status, s->reader.status[0] ? s->reader.status : "Watching for a display…",
@@ -802,8 +828,8 @@ static void draw_reader_panel(App *app, UiState *s, UiRect r)
     float width = right - x;
 
     UiColor stat_col = s->reader.error[0] ? UI_RED
-                       : s->reader.visible ? UI_ACCENT
-                                           : UI_FAINT;
+                       : (s->reader.screen_visible || s->reader.visible) ? UI_ACCENT
+                                                                         : UI_FAINT;
     char st[200];
     cs_strlcpy(st, s->reader.status[0] ? s->reader.status : "Watching for a display…",
                sizeof(st));
@@ -833,7 +859,9 @@ static void draw_reader_panel(App *app, UiState *s, UiRect r)
         ui_text_font(ui, FONT_MONO, x, r.y + 100, 9.8f, UI_MUTED, hz);
     } else {
         ui_text_font(ui, FONT_MONO, x, r.y + 64, 27, UI_COLOR(60, 74, 88, 255), "—");
-        ui_text_font(ui, FONT_UI, x, r.y + 102, 9.8f, UI_FAINT, "No readable display yet");
+        ui_text_font(ui, FONT_UI, x, r.y + 102, 9.8f, UI_FAINT,
+                     s->reader.screen_visible ? "Collecting frames — best not selected yet"
+                                              : "No readable display yet");
     }
 
     /* Confidence bar */
