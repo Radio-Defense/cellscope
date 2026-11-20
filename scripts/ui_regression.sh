@@ -40,4 +40,17 @@ CELLSCOPE_START_PAUSED=1 "$APP" --no-camera --no-modal --relaunched --no-runtime
 }
 [ -s "$OUT/paused.png" ] || { echo "EMPTY screenshot: paused" >&2; exit 1; }
 echo "ok paused -> $OUT/paused.png"
+
+# Keep the single README screenshot current after every UI regression run.
+"$APP" --autoplay --image "$IMAGE" --readme-fixture main \
+    --screenshot "$ROOT/docs/screenshot-main.png" --screenshot-delay 1200 --run-ms 3000 \
+    --no-modal --no-runtime --capture-dir "$OUT/capture-readme" >/dev/null 2>&1 || {
+    echo "FAILED: README screenshot" >&2
+    exit 1
+}
+[ -s "$ROOT/docs/screenshot-main.png" ] || {
+    echo "EMPTY screenshot: README" >&2
+    exit 1
+}
+echo "ok README -> $ROOT/docs/screenshot-main.png"
 echo "UI regression screenshots: $OUT"

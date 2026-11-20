@@ -686,7 +686,8 @@ For UI changes, render the major states and inspect them:
 ```
 
 It covers main, live reading, consensus result, Settings, Upload, model chooser,
-remove-confirmation, and paused states.
+remove-confirmation, and paused states, and refreshes
+`docs/screenshot-main.png` after the run.
 ```
 
 The test suite covers PLMN splitting, LTE/NR ARFCN conversions, a realistic
