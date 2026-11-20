@@ -1067,7 +1067,7 @@ static void draw_modal(App *app, UiState *s)
     ui_rect_fill(ui, ui_rect(0, 0, W, H), UI_COLOR(3, 5, 8, 196));
 
     float cw = CS_MIN(790.0f, W - 70);
-    float ch = CS_MIN(660.0f, H - 60);
+    float ch = CS_MIN(470.0f, H - 60);
     UiRect card = ui_rect((W - cw) / 2, (H - ch) / 2, cw, ch);
     ui_round_rect(ui, ui_rect(card.x - 2, card.y - 2, card.w + 4, card.h + 4), 18,
                   UI_COLOR(35, 55, 48, 160));
@@ -1144,27 +1144,6 @@ static void draw_modal(App *app, UiState *s)
     ui_text_ellipsis(ui, FONT_SEMIBOLD, st.x + 44, st.y + 12, 11.8f, tcol, st.w - 56, title);
     ui_text_wrapped_max(ui, st.x + 44, st.y + 32, st.w - 58, 9.2f, UI_MUTED, 1.5f, 3,
                         sub);
-
-    float note_y = status_y + status_h + 10;
-    ui_text_font(ui, FONT_MONO, x, note_y, 8.4f, UI_FAINT,
-                 "WIRELESS  adb pair IP:PORT  ·  adb connect IP:PORT");
-    ui_text_right(ui, FONT_MONO, card.x + card.w - 30, note_y, 8.4f, UI_FAINT,
-                  "retry every 4 s while open");
-
-    /* Compact feature summary fills the space above the actions. */
-    float fy = note_y + 26;
-    float fw = (card.w - 60 - 20) / 3.0f;
-    const char *ftitles[3] = {"NETWORK", "READS", "PRIVACY"};
-    const char *fvalues[3] = {"LTE · 5G NSA · SA", "PLMN · TAC · PCI · ARFCN",
-                              "100% local · no root"};
-    for (int i = 0; i < 3; i++) {
-        UiRect fr = ui_rect(x + i * (fw + 10), fy, fw, 48);
-        ui_round_rect(ui, fr, 8, UI_COLOR(13, 20, 27, 255));
-        ui_rect_outline(ui, fr, UI_BORDER_SOFT, 1);
-        ui_text_font(ui, FONT_SEMIBOLD, fr.x + 12, fr.y + 8, 7.4f, UI_FAINT, ftitles[i]);
-        ui_text_ellipsis(ui, FONT_MEDIUM, fr.x + 12, fr.y + 22, 9.2f, UI_MUTED, fr.w - 24,
-                         fvalues[i]);
-    }
 
     float by = card.y + card.h - 56;
     UiRect check = ui_rect(x, by, 172, 38);
