@@ -47,6 +47,17 @@ typedef struct {
 
 typedef struct {
     bool active;
+    int64_t started_ms;
+    MeterReading best;
+    int64_t best_ts_ms;
+    double best_quality;
+    float best_frame_score;
+    uint8_t *best_rgb;
+    int best_w, best_h;
+} VisibilitySession;
+
+typedef struct {
+    bool active;
     bool ready;
     bool error;
     bool server_ready;
@@ -160,6 +171,7 @@ typedef struct App {
     uint64_t meter_seq;
     AdbStatus adb;
     ReaderView reader;
+    VisibilitySession visibility;
     bool ever_connected;
     bool modal_open;
     bool modal_checking;

@@ -224,7 +224,7 @@ bool meter_parse_model_output(const char *text, const char *default_unit, MeterR
             cs_strlcpy(out->raw, text, sizeof(out->raw));
             return true;
         }
-        if (has_reading) {
+        if (has_reading && reading[0]) {
             char combined[192];
             if (unit[0])
                 snprintf(combined, sizeof(combined), "%s %s", reading, unit);
@@ -236,9 +236,24 @@ bool meter_parse_model_output(const char *text, const char *default_unit, MeterR
                 cs_strlcpy(out->unit, unit, sizeof(out->unit));
                 return true;
             }
+            /* The screen is present but these digits were not parseable. Keep
+             * the visibility session alive; it may recover on the next frame. */
+            if (has_visible && visible) {
+                out->visible = true;
+                out->hz = 0;
+                out->confidence = has_conf ? confidence : 0.0;
+                cs_strlcpy(out->raw, text, sizeof(out->raw));
+                return true;
+            }
             return false;
         }
-        if (has_visible && visible) return false;
+        if (has_visible && visible) {
+            out->visible = true;
+            out->hz = 0;
+            out->confidence = has_conf ? confidence : 0.0;
+            cs_strlcpy(out->raw, text, sizeof(out->raw));
+            return true;
+        }
     }
 
     /* Ollama returns the model text in "response"; llama-server puts it in

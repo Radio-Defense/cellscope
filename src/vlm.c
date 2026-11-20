@@ -22,21 +22,24 @@ extern unsigned char *stbi_write_png_to_mem(const unsigned char *pixels,
 #define VLM_PROMPT_MAX 2048
 
 static const char *k_prompt =
-    "You are an optical reader for a handheld pocket frequency meter that a person "
-    "is holding up to a webcam. Look at the attached camera frame. A reading is "
-    "usable only when the numeric frequency display is clearly visible and in "
-    "focus; the screen may be small, angled, held at a distance, mirrored, or "
-    "rotated. Mentally correct the orientation before reading. Read the main "
-    "measured frequency, not model numbers, channel names, battery icons, voltage or "
-    "power fields, or other labels. If several numbers are visible, use the largest, "
-    "most central frequency display. Read the digits exactly as shown; never invent "
-    "or autocorrect digits. "
-    "Determine the unit printed next to the display (Hz, kHz, MHz or GHz). Respond "
-    "with JSON only, no markdown, in exactly this form:\n"
+    "You are an optical reader for a device that displays a frequency measurement. "
+    "The device can be any bench frequency counter, handheld frequency meter, radio, "
+    "signal generator, or similar instrument; do not assume a particular model or "
+    "layout. Look at the attached camera frame. Normally exactly one device screen "
+    "showing a frequency measurement is visible. If several displays are present, "
+    "read the largest, most central frequency-measurement display and ignore the "
+    "others. The screen may be small, angled, far away, mirrored, or rotated "
+    "(90/180/270 degrees); mentally correct the orientation before reading. "
+    "Read only the main measured frequency value, exactly as displayed. Ignore model "
+    "names, channel names, timers, battery icons, voltage, power, signal strength, and "
+    "other numeric labels. Never invent or autocorrect digits. Determine the unit "
+    "printed with the value: Hz, kHz, MHz or GHz. Do not convert the value; CellScope "
+    "converts reading + unit to Hz. Respond with JSON only, no markdown, exactly:\n"
     "{\"visible\":true,\"reading\":\"123.456789\",\"unit\":\"MHz\",\"confidence\":0.93}\n"
-    "If no display is readable, or it is blurred, cropped, angled or ambiguous, "
-    "respond {\"visible\":false,\"reading\":\"\",\"unit\":\"\",\"confidence\":0.0}. "
-    "The reading string must contain digits and at most one decimal separator.";
+    "visible=true means a device screen is visible in the frame, even if the digits "
+    "are temporarily unreadable; in that case set reading to \"\". Use visible=false "
+    "only when no device screen is visible. The reading string must contain digits "
+    "and at most one decimal separator.";
 
 typedef struct {
     char *data;

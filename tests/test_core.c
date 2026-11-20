@@ -131,6 +131,11 @@ static void test_meter(void)
     CHECK(meter_parse_model_output(json, "MHz", &r), "parse JSON");
     CHECK(llabs((long long)r.hz - 123456789LL) < 10, "JSON hz %.0f", r.hz);
     CHECK(fabs(r.confidence - 0.93) < 0.001, "JSON confidence %.2f", r.confidence);
+    CHECK(meter_parse_model_output(
+              "{\"visible\":true,\"reading\":\"\",\"unit\":\"\",\"confidence\":0.2}",
+              "MHz", &r),
+          "visible screen with unreadable digits");
+    CHECK(r.visible && r.hz == 0, "unreadable screen keeps visibility");
 
     CHECK(meter_parse_model_output("{\"visible\":false,\"confidence\":0.1}", "MHz", &r),
           "parse invisible JSON");

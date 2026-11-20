@@ -51,6 +51,100 @@ static void meter_push_locked(App *app, const MeterSample *m)
     if (app->session_active) session_write_locked(app);
 }
 
+static void visibility_reset_locked(App *app)
+{
+    free(app->visibility.best_rgb);
+    memset(&app->visibility, 0, sizeof(app->visibility));
+    app->visibility.best_quality = -1.0;
+}
+
+/* Commit the single best-quality reading observed while a device screen was
+ * continuously visible. The reading keeps the frame timestamp and its exact
+ * frame is written next to meter.json. */
+static void visibility_commit_locked(App *app)
+{
+    VisibilitySession *v = &app->visibility;
+    if (!v->active) return;
+    if (v->best.hz > 0) {
+        char dir[CS_PATH_MAX], capture[CS_PATH_MAX] = {0};
+        cs_strlcpy(dir,
+                   app->session_active && app->session_dir[0] ? app->session_dir
+                                                              : app->capture_dir,
+                   sizeof(dir));
+        int64_t ts = v->best_ts_ms ? v->best_ts_ms : cs_epoch_ms();
+        char stamp[40];
+        cs_format_date_stamp(ts, stamp, sizeof(stamp));
+        snprintf(capture, sizeof(capture), "%s/meter_%s_%03d.png", dir, stamp,
+                 (int)(ts % 1000));
+        if (v->best_rgb && v->best_w > 0 && v->best_h > 0) {
+            if (!stbi_write_png(capture, v->best_w, v->best_h, 3, v->best_rgb,
+                                v->best_w * 3))
+                capture[0] = '\0';
+        } else {
+            capture[0] = '\0';
+        }
+        MeterSample ms;
+        memset(&ms, 0, sizeof(ms));
+        ms.ts_ms = ts;
+        cs_format_time_ms(ms.ts_ms, ms.time_text, sizeof(ms.time_text));
+        ms.hz = (uint64_t)(v->best.hz + 0.5);
+        ms.confidence = v->best.confidence;
+        cs_strlcpy(ms.raw, v->best.raw, sizeof(ms.raw));
+        cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
+        cs_strlcpy(ms.path, capture, sizeof(ms.path));
+        cs_strlcpy(ms.shot_name, file_basename(capture), sizeof(ms.shot_name));
+        meter_push_locked(app, &ms);
+        app_log(app, "best visibility reading recorded: %llu Hz (%s, %.2f, q=%.2f)",
+                (unsigned long long)ms.hz, ms.backend, ms.confidence, v->best_quality);
+        app->reader.accepted++;
+        cs_strlcpy(app->reader.capture_path, capture, sizeof(app->reader.capture_path));
+        app->reader.hz = (double)ms.hz;
+        app->reader.confidence = ms.confidence;
+        cs_strlcpy(app->reader.raw, ms.raw, sizeof(app->reader.raw));
+        char eng[64];
+        cs_format_eng(ms.hz, eng, sizeof(eng));
+        snprintf(app->reader.status, sizeof(app->reader.status),
+                 "Recorded best %s · screen left", eng);
+    }
+    visibility_reset_locked(app);
+}
+
+static void visibility_update_locked(App *app, const MeterReading *r, const uint8_t *rgb,
+                                     int w, int h, int64_t ts, float frame_score)
+{
+    VisibilitySession *v = &app->visibility;
+    if (!r->visible) {
+        visibility_commit_locked(app);
+        app->reader.visible = false;
+        return;
+    }
+    if (!v->active) {
+        memset(v, 0, sizeof(*v));
+        v->active = true;
+        v->started_ms = cs_epoch_ms();
+        v->best_quality = -1.0;
+    }
+    if (r->hz <= 0) return;
+    double quality = (r->confidence > 0 ? r->confidence : 0.5) * 0.7 +
+                     frame_score * 0.3;
+    if (quality <= v->best_quality) return;
+    free(v->best_rgb);
+    v->best_rgb = NULL;
+    if (rgb && w > 0 && h > 0) {
+        size_t bytes = (size_t)w * h * 3;
+        v->best_rgb = malloc(bytes);
+        if (v->best_rgb) {
+            memcpy(v->best_rgb, rgb, bytes);
+            v->best_w = w;
+            v->best_h = h;
+        }
+    }
+    v->best = *r;
+    v->best_ts_ms = ts ? ts : cs_epoch_ms();
+    v->best_frame_score = frame_score;
+    v->best_quality = quality;
+}
+
 void app_add_cell(App *app, const CellSample *sample)
 {
     SDL_LockMutex(app->mu);
@@ -723,6 +817,7 @@ void app_shutdown(App *app)
     }
     if (app->mu) {
         SDL_LockMutex(app->mu);
+        visibility_commit_locked(app);
         session_end_locked(app);
         SDL_UnlockMutex(app->mu);
     }
@@ -1438,82 +1533,93 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             continue;
         }
 
-        if (!r.visible || r.hz <= 0) {
-            meter_tracker_update(&app->tracker, &r, now);
+        if (mock) {
+            if (!r.visible || r.hz <= 0) {
+                meter_tracker_update(&app->tracker, &r, now);
+                SDL_LockMutex(app->mu);
+                app->reader.busy = false;
+                app->reader.visible = false;
+                app->reader.error[0] = '\0';
+                cs_strlcpy(app->reader.status, "Watching for a display…",
+                           sizeof(app->reader.status));
+                SDL_UnlockMutex(app->mu);
+                continue;
+            }
+            if (r.confidence > 0 && r.confidence < 0.45) {
+                SDL_LockMutex(app->mu);
+                app->reader.busy = false;
+                cs_strlcpy(app->reader.status, "Low confidence — hold the meter steady",
+                           sizeof(app->reader.status));
+                app->reader.confidence = r.confidence;
+                SDL_UnlockMutex(app->mu);
+                continue;
+            }
+            MeterTrackAction action = meter_tracker_update(&app->tracker, &r, now);
+            int stable = meter_tracker_stable(&app->tracker);
             SDL_LockMutex(app->mu);
             app->reader.busy = false;
-            app->reader.visible = false;
-            app->reader.error[0] = '\0';
-            cs_strlcpy(app->reader.status, "Watching for a display…", sizeof(app->reader.status));
-            SDL_UnlockMutex(app->mu);
-            continue;
-        }
-        if (r.confidence > 0 && r.confidence < 0.45) {
-            SDL_LockMutex(app->mu);
-            app->reader.busy = false;
-            cs_strlcpy(app->reader.status, "Low confidence — hold the meter steady",
-                       sizeof(app->reader.status));
+            app->reader.visible = true;
+            app->reader.hz = r.hz;
             app->reader.confidence = r.confidence;
+            app->reader.stable = stable;
+            app->reader.last_ok_ms = cs_epoch_ms();
+            cs_strlcpy(app->reader.raw, r.raw, sizeof(app->reader.raw));
+            cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
+            app->reader.error[0] = '\0';
+            if (action == METER_TRACK_RECORD) {
+                MeterSample ms;
+                memset(&ms, 0, sizeof(ms));
+                ms.ts_ms = frame_ts ? frame_ts : (frame_ms ? frame_ms : cs_epoch_ms());
+                cs_format_time_ms(ms.ts_ms, ms.time_text, sizeof(ms.time_text));
+                ms.hz = (uint64_t)(r.hz + 0.5);
+                ms.confidence = r.confidence;
+                cs_strlcpy(ms.raw, r.raw, sizeof(ms.raw));
+                cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
+                ms.demo = true;
+                meter_push_locked(app, &ms);
+                app->reader.accepted++;
+                char eng[64];
+                cs_format_eng(ms.hz, eng, sizeof(eng));
+                snprintf(app->reader.status, sizeof(app->reader.status), "Recorded %s", eng);
+            } else if (stable >= 2) {
+                cs_strlcpy(app->reader.status, "Stable — waiting for a change",
+                           sizeof(app->reader.status));
+            } else {
+                cs_strlcpy(app->reader.status, "Display detected — hold steady",
+                           sizeof(app->reader.status));
+            }
             SDL_UnlockMutex(app->mu);
             continue;
         }
 
-        MeterTrackAction action = meter_tracker_update(&app->tracker, &r, now);
-        int stable = meter_tracker_stable(&app->tracker);
-        char capture[CS_PATH_MAX] = {0};
-        if (action == METER_TRACK_RECORD && rgb && rw > 0) {
-            char shot_dir[CS_PATH_MAX];
-            SDL_LockMutex(app->mu);
-            cs_strlcpy(shot_dir,
-                       app->session_active && app->session_dir[0] ? app->session_dir
-                                                                  : app->capture_dir,
-                       sizeof(shot_dir));
-            SDL_UnlockMutex(app->mu);
-            char stamp[40];
-            int64_t ts = frame_ts ? frame_ts : (frame_ms ? frame_ms : cs_epoch_ms());
-            cs_format_date_stamp(ts, stamp, sizeof(stamp));
-            snprintf(capture, sizeof(capture), "%s/meter_%s_%03d.png", shot_dir, stamp,
-                     (int)(ts % 1000));
-            if (!stbi_write_png(capture, rw, rh, 3, rgb, rw * 3)) capture[0] = '\0';
-        }
-
+        int64_t best_frame_ts = frame_ts ? frame_ts : (frame_ms ? frame_ms : cs_epoch_ms());
         SDL_LockMutex(app->mu);
         app->reader.busy = false;
-        app->reader.visible = true;
-        app->reader.hz = r.hz;
-        app->reader.confidence = r.confidence;
-        app->reader.stable = stable;
         app->reader.last_ok_ms = cs_epoch_ms();
-        cs_strlcpy(app->reader.raw, r.raw, sizeof(app->reader.raw));
         cs_strlcpy(app->reader.backend, app->vlm.label, sizeof(app->reader.backend));
         app->reader.error[0] = '\0';
-        if (action == METER_TRACK_RECORD) {
-            MeterSample ms;
-            memset(&ms, 0, sizeof(ms));
-            ms.ts_ms = frame_ts ? frame_ts : (frame_ms ? frame_ms : cs_epoch_ms());
-            cs_format_time_ms(ms.ts_ms, ms.time_text, sizeof(ms.time_text));
-            ms.hz = (uint64_t)(r.hz + 0.5);
-            ms.confidence = r.confidence;
-            cs_strlcpy(ms.raw, r.raw, sizeof(ms.raw));
-            cs_strlcpy(ms.backend, app->vlm.label, sizeof(ms.backend));
-            cs_strlcpy(ms.path, capture, sizeof(ms.path));
-            cs_strlcpy(ms.shot_name, file_basename(capture), sizeof(ms.shot_name));
-            ms.demo = app->vlm.active == VLM_BACKEND_MOCK;
-            meter_push_locked(app, &ms);
-            app_log(app, "meter reading recorded: %llu Hz (%s, %.2f)",
-                    (unsigned long long)ms.hz, ms.backend, ms.confidence);
-            app->reader.accepted++;
-            cs_strlcpy(app->reader.capture_path, capture,
-                       sizeof(app->reader.capture_path));
-            char eng[64];
-            cs_format_eng(ms.hz, eng, sizeof(eng));
-            snprintf(app->reader.status, sizeof(app->reader.status), "Recorded %s", eng);
-        } else if (stable >= 2) {
-            cs_strlcpy(app->reader.status, "Stable — waiting for a change",
+        if (!r.visible) {
+            cs_strlcpy(app->reader.status, "No device screen visible — watching",
                        sizeof(app->reader.status));
+            visibility_update_locked(app, &r, NULL, 0, 0, best_frame_ts, frame_score);
+            app->reader.visible = false;
         } else {
-            cs_strlcpy(app->reader.status, "Display detected — hold steady",
-                       sizeof(app->reader.status));
+            app->reader.visible = true;
+            visibility_update_locked(app, &r, rgb, rw, rh, best_frame_ts, frame_score);
+            if (r.hz > 0) {
+                app->reader.hz = r.hz;
+                app->reader.confidence = r.confidence;
+                cs_strlcpy(app->reader.raw, r.raw, sizeof(app->reader.raw));
+                char eng[64];
+                cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
+                snprintf(app->reader.status, sizeof(app->reader.status),
+                         "Screen visible · best %s · q=%d%%", eng,
+                         (int)(app->visibility.best_quality * 100.0));
+            } else {
+                cs_strlcpy(app->reader.status,
+                           "Device screen visible — hold steady for readable digits",
+                           sizeof(app->reader.status));
+            }
         }
         SDL_UnlockMutex(app->mu);
         SDL_Delay(80);
@@ -1540,6 +1646,7 @@ void app_toggle_pause(App *app)
     bool session_ok = true;
     if (pause_now) {
         app->paused = true;
+        visibility_commit_locked(app);
         session_end_locked(app);
         app->reader.busy = false;
         cs_strlcpy(app->reader.status, "Paused — press play to resume",

@@ -258,11 +258,16 @@ The reader prompt asks for JSON only:
 {"visible":true,"reading":"2160.150","unit":"GHz","confidence":0.93}
 ```
 
-`reading` is converted to Hz in C. Supported units: `Hz`, `kHz`, `MHz`, `GHz`.
+The prompt is device-agnostic: any bench counter, handheld meter, radio, signal
+generator, or similar screen is accepted, as long as exactly one
+frequency-measurement display is the main subject. It explicitly tells the VLM
+that the screen may be rotated or mirrored, and that `visible` means a device
+screen is present even when the digits are temporarily unreadable (then
+`reading` is empty). The model reads the displayed value; it does not convert
+it. `reading + unit` is converted to Hz in C for `Hz`, `kHz`, `MHz`, and `GHz`.
 If a bare number has no unit, `--unit` (default `MHz`) is used. There is no
 fallback reader: if no VLM is available, CellScope shows that the reader is
-offline and does not invent a frequency. The local HF/MiniMind bridge handles mirrored and
-rotated camera frames through the training augmentation and prompt.
+offline and does not invent a frequency.
 
 ### Burst capture and best-frame selection
 
@@ -277,9 +282,12 @@ scores each frame's central guide area for:
 - crushed shadows
 
 The reader consumes the highest-scoring unused frame, with a score threshold so
-a blank wall does not trigger the VLM. When a reading is accepted, the screenshot
-is the exact best frame that produced it and is written into the current dataset
-folder. The UI shows `burst 12/12 · best 90%`.
+a blank wall does not trigger the VLM. A visibility event starts when the VLM
+reports `visible:true` and ends when it reports `visible:false` (or when capture
+is paused/stopped). During one event, CellScope keeps the extraction with the
+best combined confidence and frame quality. Only that best extraction is added
+to the readings table, using its frame timestamp and a screenshot of that exact
+frame. The UI shows `burst 12/12 · best 90%`.
 
 ### Capture sessions and datasets
 
@@ -292,7 +300,7 @@ contains:
 datasets/20261120_193716/
   phone.json       # bottom-left cell list entries for this session
   meter.json       # bottom-right readings for this session
-  meter_*.png      # screenshot for every accepted reading
+  meter_*.png      # screenshot of the best frame for each visibility event
 ```
 
 `phone.json` and `meter.json` are valid JSON arrays, rewritten after every new
@@ -496,7 +504,7 @@ and point an explicit backend at it with
 > Training quality depends on the dataset. A 65M-parameter VLM is good at a
 > narrow, repetitive task like reading one meter model; it is not a general
 > vision engine. Keep the training photos close to the deployment pose and verify with
-> real captures. The app's burst selector and two-consistent-readings rule
+> real captures. The app's burst selector and best-per-visibility extraction
 > reduce accidental readings, but review recorded values.
 
 ## Architecture
@@ -518,7 +526,7 @@ Burst ring (12) ── quality score ──► best unused frame
                                               ▼
                                     meter parser → Hz
                                               │
-                    2 stable samples ──► readings list + PNG
+      best quality per visibility ──► readings list + PNG
                                               ▲
                     adb poller (1 s) ── telephony.registry
 ```
