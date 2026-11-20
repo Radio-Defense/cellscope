@@ -17,4 +17,9 @@ typedef struct {
  * rgb is tightly packed RGB24. */
 FrameQuality frame_quality(const uint8_t *rgb, int w, int h);
 
+/* Downscaled luma signature and mean absolute signature difference (0..1).
+ * Used for inter-frame motion/stability, not sharpness. */
+void frame_luma_signature(const uint8_t *rgb, int w, int h, uint8_t *out, int gw, int gh);
+float signature_motion(const uint8_t *a, const uint8_t *b, int n);
+
 #endif

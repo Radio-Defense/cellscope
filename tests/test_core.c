@@ -193,6 +193,16 @@ static void test_quality(void)
     CHECK(glare.glare > 0.9f, "glare fraction %.2f", glare.glare);
 
     CHECK(check.sharpness > blank.sharpness, "sharpness ordering");
+
+    uint8_t sig_flat[64 * 36], sig_check[64 * 36];
+    memset(img, 128, (size_t)w * h * 3);
+    frame_luma_signature(img, w, h, sig_flat, 64, 36);
+    CHECK(signature_motion(sig_flat, sig_flat, 64 * 36) == 0.0f,
+          "identical frame signature motion");
+    checkerboard(img, w, h);
+    frame_luma_signature(img, w, h, sig_check, 64, 36);
+    CHECK(signature_motion(sig_flat, sig_check, 64 * 36) > 0.10f,
+          "frame motion detects checkerboard change");
     free(img);
 }
 

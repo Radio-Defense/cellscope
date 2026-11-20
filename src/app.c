@@ -1001,31 +1001,75 @@ void app_shutdown(App *app)
     if (app->preview_tex) SDL_DestroyTexture(app->preview_tex);
     ui_shutdown(&app->ui);
     for (int i = 0; i < BURST_MAX; i++) free(app->burst[i].rgb);
+    free(app->latest_rgb);
+    free(app->motion_sig);
     free(app->img_rgb);
     if (app->mu) SDL_DestroyMutex(app->mu);
 }
+
+#define MOTION_GW 64
+#define MOTION_GH 36
 
 static void publish_frame(App *app, const uint8_t *rgb, int w, int h, int64_t ts)
 {
     if (!rgb || w <= 0 || h <= 0) return;
     size_t bytes = (size_t)w * h * 3;
-    uint8_t *copy = malloc(bytes);
-    if (!copy) return;
-    memcpy(copy, rgb, bytes);
     FrameQuality q = frame_quality(rgb, w, h);
+    uint8_t sig[MOTION_GW * MOTION_GH];
+    frame_luma_signature(rgb, w, h, sig, MOTION_GW, MOTION_GH);
+
     SDL_LockMutex(app->mu);
-    int slot = app->burst_next;
-    free(app->burst[slot].rgb);
-    app->burst[slot].rgb = copy;
-    app->burst[slot].w = w;
-    app->burst[slot].h = h;
-    app->burst[slot].ts_ms = ts;
-    app->burst[slot].seq = ++app->burst_seq;
-    app->burst[slot].score = q.score;
-    app->burst[slot].quality = q;
-    app->burst[slot].used = false;
-    app->burst_next = (slot + 1) % BURST_MAX;
-    if (app->burst_count < BURST_MAX) app->burst_count++;
+    if (!app->motion_sig) {
+        app->motion_sig = malloc(MOTION_GW * MOTION_GH);
+        if (app->motion_sig) {
+            memcpy(app->motion_sig, sig, MOTION_GW * MOTION_GH);
+            app->motion_sig_n = MOTION_GW * MOTION_GH;
+            app->have_motion_sig = true;
+        }
+    }
+    float motion = app->have_motion_sig
+                       ? signature_motion(sig, app->motion_sig, MOTION_GW * MOTION_GH)
+                       : 0.0f;
+    if (app->motion_sig) memcpy(app->motion_sig, sig, MOTION_GW * MOTION_GH);
+    app->have_motion_sig = true;
+
+    /* Keep exactly one latest frame for presence checks; never archive bad
+     * frames. Frames that fail these legibility/stability gates are discarded
+     * here, before the VLM queue. */
+    uint8_t *latest = realloc(app->latest_rgb, bytes);
+    if (latest) {
+        memcpy(latest, rgb, bytes);
+        app->latest_rgb = latest;
+        app->latest_w = w;
+        app->latest_h = h;
+        app->latest_ts_ms = ts;
+        app->latest_quality = q;
+    }
+
+    bool candidate = q.score >= 0.16f && q.sharpness >= 0.10f &&
+                     q.contrast >= 0.14f && q.glare <= 0.40f &&
+                     q.dark <= 0.40f && motion <= 0.12f;
+    if (candidate) {
+        int slot = app->burst_next;
+        free(app->burst[slot].rgb);
+        uint8_t *copy = malloc(bytes);
+        if (copy) {
+            memcpy(copy, rgb, bytes);
+            app->burst[slot].rgb = copy;
+            app->burst[slot].w = w;
+            app->burst[slot].h = h;
+            app->burst[slot].ts_ms = ts;
+            app->burst[slot].seq = ++app->burst_seq;
+            app->burst[slot].score = q.score;
+            app->burst[slot].motion = motion;
+            app->burst[slot].quality = q;
+            app->burst[slot].used = false;
+            app->burst_next = (slot + 1) % BURST_MAX;
+            if (app->burst_count < BURST_MAX) app->burst_count++;
+        } else {
+            app->burst[slot].rgb = NULL;
+        }
+    }
     app->reader.burst_count = app->burst_count;
     SDL_UnlockMutex(app->mu);
 }
@@ -1589,6 +1633,7 @@ static int SDLCALL cellscope_vlm_thread(void *data)
     App *app = data;
     uint8_t *rgb = NULL;
     int rw = 0, rh = 0;
+    int64_t last_scan_ms = 0;
     while (!SDL_GetAtomicInt(&app->quit)) {
         int64_t now = cs_now_ms();
         bool paused = false;
@@ -1675,12 +1720,20 @@ static int SDLCALL cellscope_vlm_thread(void *data)
         }
 
         bool mock = app->vlm.active == VLM_BACKEND_MOCK;
+        if (now - last_scan_ms < 1000) {
+            SDL_Delay(20);
+            continue;
+        }
+        last_scan_ms = now;
+
         bool have = false;
+        bool candidate = false;
         int64_t frame_ts = 0;
         float frame_score = 0;
         SDL_LockMutex(app->mu);
         if (mock) {
             have = true;
+            candidate = true;
         } else {
             int64_t now_epoch = cs_epoch_ms();
             int best = -1;
@@ -1693,14 +1746,15 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 if (f->score > current_best) current_best = f->score;
                 if (f->used) continue;
                 float age = (float)(now_epoch - f->ts_ms);
-                float effective = f->score + 0.03f * (1.0f - age / 6000.0f);
+                float effective = f->score - 0.25f * f->motion +
+                                  0.03f * (1.0f - age / 6000.0f);
                 if (effective > best_score) {
-                    best_score = f->score;
+                    best_score = effective;
                     best = i;
                 }
             }
             app->reader.best_score = current_best;
-            if (best >= 0 && best_score >= 0.15f) {
+            if (best >= 0 && best_score >= 0.12f) {
                 BurstFrame *f = &app->burst[best];
                 size_t bytes = (size_t)f->w * f->h * 3;
                 uint8_t *copy = realloc(rgb, bytes);
@@ -1712,10 +1766,29 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                     frame_ts = f->ts_ms;
                     frame_score = f->score;
                     f->used = true;
+                    candidate = true;
                     have = true;
                     app->reader.best_score = f->score;
                     app->reader.frame_w = f->w;
                     app->reader.frame_h = f->h;
+                }
+            }
+            /* Once per second, also sample the newest frame for presence
+             * detection. It is not archived unless it passed the DSP gate. */
+            if (!have && app->latest_rgb && app->latest_w > 0 && app->latest_h > 0) {
+                size_t bytes = (size_t)app->latest_w * app->latest_h * 3;
+                uint8_t *copy = realloc(rgb, bytes);
+                if (copy) {
+                    rgb = copy;
+                    memcpy(rgb, app->latest_rgb, bytes);
+                    rw = app->latest_w;
+                    rh = app->latest_h;
+                    frame_ts = app->latest_ts_ms;
+                    frame_score = app->latest_quality.score;
+                    have = true;
+                    candidate = false;
+                    app->reader.frame_w = rw;
+                    app->reader.frame_h = rh;
                 }
             }
             app->reader.burst_count = app->burst_count;
@@ -1728,12 +1801,12 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 cs_strlcpy(app->reader.status, "Reading synthetic frame…",
                            sizeof(app->reader.status));
             else if (app->reader.display_until_ms == 0) {
-                if (app->reader.screen_visible)
+                if (candidate)
                     snprintf(app->reader.status, sizeof(app->reader.status),
-                             "Read best of %d frames · quality %d%%",
-                             app->reader.burst_count, (int)(frame_score * 100.0f));
+                             "Candidate frame · q=%d%% · 1 Hz scan",
+                             (int)(frame_score * 100.0f));
                 else
-                    cs_strlcpy(app->reader.status, "Watching for a display…",
+                    cs_strlcpy(app->reader.status, "Scanning for a meter screen (1 Hz)…",
                                sizeof(app->reader.status));
             }
         } else if (!mock) {
@@ -1870,8 +1943,9 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 app->reader.confidence = 0;
                 app->reader.raw[0] = '\0';
             }
-            visibility_update_locked(app, &r, rgb, rw, rh, best_frame_ts, frame_score);
-            if (r.hz > 0) {
+            if (candidate)
+                visibility_update_locked(app, &r, rgb, rw, rh, best_frame_ts, frame_score);
+            if (candidate && r.hz > 0) {
                 app->reader.live_valid = true;
                 app->reader.live_hz = r.hz;
                 app->reader.live_confidence = r.confidence;
@@ -1880,14 +1954,20 @@ static int SDLCALL cellscope_vlm_thread(void *data)
                 char eng[64];
                 cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
                 snprintf(app->reader.status, sizeof(app->reader.status),
-                         "Screen visible · live %s · %d reads / %d stored", eng,
-                         app->visibility.total_readings,
+                         "Screen visible · live %s · %d candidates", eng,
                          app->visibility.frame_count);
+            } else if (!candidate) {
+                app->reader.live_valid = false;
+                app->reader.live_hz = 0;
+                app->reader.live_raw[0] = '\0';
+                cs_strlcpy(app->reader.status,
+                           "Screen visible — scanning candidate frames (1 Hz)",
+                           sizeof(app->reader.status));
             } else {
                 app->reader.live_valid = false;
                 app->reader.live_raw[0] = '\0';
                 cs_strlcpy(app->reader.status,
-                           "Device screen visible — hold steady for readable digits",
+                           "Candidate screen visible — reading digits",
                            sizeof(app->reader.status));
             }
         }

@@ -93,3 +93,30 @@ FrameQuality frame_quality(const uint8_t *rgb, int w, int h)
     free(gray);
     return q;
 }
+
+
+void frame_luma_signature(const uint8_t *rgb, int w, int h, uint8_t *out, int gw, int gh)
+{
+    if (!rgb || !out || w <= 0 || h <= 0 || gw <= 0 || gh <= 0) return;
+    for (int y = 0; y < gh; y++) {
+        int sy = (int)((long)y * h / gh);
+        if (sy >= h) sy = h - 1;
+        for (int x = 0; x < gw; x++) {
+            int sx = (int)((long)x * w / gw);
+            if (sx >= w) sx = w - 1;
+            const uint8_t *p = rgb + ((size_t)sy * w + sx) * 3;
+            out[(size_t)y * gw + x] = (uint8_t)((p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8);
+        }
+    }
+}
+
+float signature_motion(const uint8_t *a, const uint8_t *b, int n)
+{
+    if (!a || !b || n <= 0) return 0.0f;
+    unsigned sum = 0;
+    for (int i = 0; i < n; i++) {
+        int d = (int)a[i] - (int)b[i];
+        sum += (unsigned)(d < 0 ? -d : d);
+    }
+    return (float)sum / (float)n / 255.0f;
+}

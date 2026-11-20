@@ -337,17 +337,19 @@ frame is scored for:
 - blown highlights (glare)
 - crushed shadows
 
-The reader consumes the highest-scoring unused frame, with a score threshold so
-a blank wall does not trigger the VLM. There is no fixed VLM interval: the next
-request starts immediately after the previous inference returns. A visibility
-event starts when the VLM reports `visible:true` and ends when it reports
-`visible:false` (or when capture is paused/stopped). Every processed frame with a
-readable extraction is temporarily retained in memory with its webcam capture
-timestamp. During the event:
+The reader runs one combined presence+reading VLM request per second. Before
+that request, a DSP gate scores the frame's central guide region and only
+retains frames that are sharp, high-contrast, glare-free, well exposed and
+temporally stable. Bad frames are discarded immediately; only one "latest"
+frame is kept for the once-per-second presence check, so there is no all-frame
+archive. A visibility event starts when the VLM reports `visible:true` and ends
+when it reports `visible:false` (or when capture is paused/stopped). Every
+candidate frame with a readable extraction is temporarily retained in memory
+with its webcam capture timestamp. During the event:
 
 - the **left-top live card** updates with every extracted reading;
 - the webcam reader overlay stays blank, showing “collecting”;
-- every retained frame votes in a frequency cluster, weighted by VLM
+- every retained candidate frame votes in a frequency cluster, weighted by VLM
   confidence and frame quality;
 - the cluster with the greatest aggregate weight wins; within it, the
   highest-quality frame is selected;
@@ -359,9 +361,10 @@ timestamp. During the event:
   capture continues until the screen leaves, but that visibility event is not
   recorded twice.
 
-The event frame list is freed when the display leaves. It is not a fixed
+The candidate frame list is freed when the display leaves. It is not a fixed
 12-frame sample; 512 frames is only a safety cap for a display left visible for
-a very long time without consensus.
+a very long time without consensus. The DSP pre-filter rejects blurry, moving,
+low-contrast, crushed or glared frames before they consume VLM inference time.
 
 No fixed 12-frame sample is used for the decision. The 12-frame value in the UI
 is only the staging/burst indicator. The table timestamp is compensated for VLM

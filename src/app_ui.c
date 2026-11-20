@@ -682,10 +682,10 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                          st.w - 128, status);
         char burst[64];
         if (s->reader.burst_count > 0)
-            snprintf(burst, sizeof(burst), "%d/12 · Q%d%%", s->reader.burst_count,
+            snprintf(burst, sizeof(burst), "%d/12 candidates · Q%d%%", s->reader.burst_count,
                      (int)(s->reader.best_score * 100.0f));
         else
-            cs_strlcpy(burst, "burst idle", sizeof(burst));
+            cs_strlcpy(burst, "no candidates", sizeof(burst));
         ui_text_right(ui, FONT_MONO, st.x + st.w - 10, st.y + 8, 8.0f, UI_FAINT, burst);
 
         const char *detail = s->reader.error[0] ? s->reader.error

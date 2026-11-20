@@ -28,6 +28,7 @@ typedef struct {
     int64_t ts_ms;
     uint64_t seq;
     float score;
+    float motion;
     FrameQuality quality;
     bool used;
 } BurstFrame;
@@ -208,6 +209,13 @@ typedef struct App {
     char device_label[128];
 
     BurstFrame burst[BURST_MAX];
+    uint8_t *latest_rgb;
+    int latest_w, latest_h;
+    int64_t latest_ts_ms;
+    FrameQuality latest_quality;
+    uint8_t *motion_sig;
+    int motion_sig_n;
+    bool have_motion_sig;
     int burst_count;
     int burst_next;
     uint64_t burst_seq;
