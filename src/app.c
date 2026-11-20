@@ -8,6 +8,7 @@
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "wifi.h"
+#include "camera_platform.h"
 #include <SDL3/SDL_dialog.h>
 
 static void app_log(App *app, const char *fmt, ...);
@@ -699,6 +700,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
             app->camera_ok = false;
             cs_strlcpy(app->camera_error, cam_err, sizeof(app->camera_error));
         }
+        app->last_camera_retry_ms = cs_now_ms();
     }
 
     if (app->image_mode) {
@@ -855,6 +857,30 @@ static void publish_frame(App *app, const uint8_t *rgb, int w, int h, int64_t ts
     SDL_UnlockMutex(app->mu);
 }
 
+bool app_retry_camera(App *app, bool notify)
+{
+    camera_close(&app->cam);
+    app->camera_error[0] = '\0';
+    char err[512] = {0};
+    bool ok = camera_init(&app->cam, app->ren, app->camera_index, err, sizeof(err));
+    app->camera_ok = ok;
+    if (!ok) cs_strlcpy(app->camera_error, err, sizeof(app->camera_error));
+    if (notify || ok) app_log(app, "camera retry: %s%s", ok ? "opened" : "failed",
+                              ok ? "" : err);
+    if (notify) {
+        if (ok) {
+            if (app->cam.permission_pending)
+                app_notify(app, false,
+                           "Camera opened — waiting for the system permission dialog.");
+            else
+                app_notify(app, false, "Camera connected: %s", app->cam.name);
+        } else {
+            app_notify(app, true, "Camera: %s", err);
+        }
+    }
+    return ok;
+}
+
 void app_update(App *app)
 {
     int64_t now = cs_now_ms();
@@ -901,6 +927,21 @@ void app_update(App *app)
                 app->last_camera_rgb_ms = app->cam.rgb_ms;
                 app->last_snapshot_ms = now;
             }
+        }
+    }
+
+    if (!app->demo && !app->image_mode && !app->no_camera) {
+        if (!app->camera_permission_requested && now - app->started_ms > 800 &&
+            app->cam.permission_pending) {
+            app->camera_permission_requested = true;
+            app_log(app, "requesting system camera permission");
+            SDL_RaiseWindow(app->win);
+            camera_platform_request_access();
+        }
+        if (!app->camera_ok && app->cam.permission_pending &&
+            now - app->last_camera_retry_ms > 1500) {
+            app->last_camera_retry_ms = now;
+            app_retry_camera(app, false);
         }
     }
 

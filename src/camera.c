@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "camera_platform.h"
 #include "util.h"
 
 static bool open_index(Camera *cam, int index, char *err, size_t err_cap)
@@ -28,8 +29,6 @@ static bool open_index(Camera *cam, int index, char *err, size_t err_cap)
         return false;
     }
     cs_strlcpy(cam->name, cam->names[index], sizeof(cam->name));
-    cam->permission_pending = false;
-    cam->permission_denied = false;
     cam->active = false;
     cam->tex = NULL;
     cam->width = cam->height = 0;
@@ -39,12 +38,27 @@ static bool open_index(Camera *cam, int index, char *err, size_t err_cap)
 
 bool camera_init(Camera *cam, SDL_Renderer *ren, int index, char *err, size_t err_cap)
 {
+    if (cam->cam) camera_close(cam);
     memset(cam, 0, sizeof(*cam));
     cam->ren = ren;
+    int permission = camera_platform_prepare();
+    if (permission == CAMERA_PLATFORM_DENIED) {
+        cam->permission_denied = true;
+        snprintf(err, err_cap, "%s", camera_platform_hint());
+        return false;
+    }
+    if (permission == CAMERA_PLATFORM_PENDING) cam->permission_pending = true;
+
     int count = 0;
     SDL_CameraID *ids = SDL_GetCameras(&count);
     if (!ids || count <= 0) {
-        snprintf(err, err_cap, "No camera detected");
+        if (cam->permission_pending)
+            snprintf(err, err_cap,
+                     "Waiting for the system camera permission. If no dialog is visible, "
+                     "%s",
+                     camera_platform_hint());
+        else
+            snprintf(err, err_cap, "No camera detected. %s", camera_platform_hint());
         if (ids) SDL_free(ids);
         return false;
     }
@@ -55,7 +69,19 @@ bool camera_init(Camera *cam, SDL_Renderer *ren, int index, char *err, size_t er
         cs_strlcpy(cam->names[i], name ? name : "Camera", sizeof(cam->names[i]));
     }
     SDL_free(ids);
-    if (!open_index(cam, index, err, err_cap)) return false;
+    if (!open_index(cam, index, err, err_cap)) {
+        if (cam->permission_pending) {
+            snprintf(err, err_cap,
+                     "Waiting for the system camera permission. If no dialog is visible, "
+                     "%s",
+                     camera_platform_hint());
+        } else if (strstr(err, "permission") || strstr(err, "denied") ||
+                   strstr(err, "access") || strstr(err, "Access")) {
+            cam->permission_denied = true;
+            snprintf(err, err_cap, "%s", camera_platform_hint());
+        }
+        return false;
+    }
     return true;
 }
 
@@ -132,16 +158,17 @@ void camera_update(Camera *cam)
     SDL_CameraPermissionState perm = SDL_GetCameraPermissionState(cam->cam);
     if (perm == SDL_CAMERA_PERMISSION_STATE_PENDING) {
         cam->permission_pending = true;
+        cs_strlcpy(cam->error, camera_platform_hint(), sizeof(cam->error));
         return;
     }
     if (perm == SDL_CAMERA_PERMISSION_STATE_DENIED) {
         cam->permission_denied = true;
-        if (!cam->error[0])
-            snprintf(cam->error, sizeof(cam->error),
-                     "Camera access was denied. Allow CellScope in System Settings → "
-                     "Privacy & Security → Camera.");
+        cs_strlcpy(cam->error, camera_platform_hint(), sizeof(cam->error));
         return;
     }
+    cam->permission_pending = false;
+    cam->permission_denied = false;
+    cam->error[0] = '\0';
 
     if (!cam->active) {
         SDL_CameraSpec spec;

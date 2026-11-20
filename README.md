@@ -55,11 +55,22 @@ cmake --build build -j
 open build/cellscope.app
 ```
 
-The bundle is ad-hoc signed by the build. Approve the camera prompt the first
-time. If you previously denied it, enable **CellScope** in
-*System Settings → Privacy & Security → Camera*. Launching the bundle with
-`open` is important on macOS; running the raw executable from a terminal can
-make TCC attribute camera permission to the terminal instead.
+The bundle is ad-hoc signed by the build, with the camera entitlement and
+`NSCameraUsageDescription`. Ad-hoc signatures can make macOS/TCC forget grants
+between rebuilds; for repeatable camera permission, configure a stable Apple
+Development/Developer ID identity:
+`-DCELLSCOPE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"`.
+
+On first launch CellScope requests camera access from the main loop so macOS can
+present its normal system dialog. The camera panel also shows **Retry camera**,
+**Camera settings**, and (when appropriate) **Relaunch app**. If you previously
+denied access, enable **CellScope** in
+*System Settings → Privacy & Security → Camera*, then click Retry. Launching the
+bundle with `open` is important on macOS; running the raw executable from a
+terminal can make TCC attribute camera permission to the terminal instead, in
+which case use **Relaunch app**.
+
+![Camera permission panel](docs/screenshot-camera-permission.png)
 
 ### Windows
 
@@ -73,8 +84,11 @@ build\Release\cellscope.exe
 ```
 
 Windows camera access is controlled by *Settings → Privacy → Camera*. The app
-keeps a console window by default for ADB diagnostics; configure with
-`-DCELLSCOPE_WIN_CONSOLE=OFF` for a pure GUI build.
+shows **Camera settings** in the camera panel (it opens
+`ms-settings:privacy-webcam`) plus **Retry camera**. Enable camera access for
+desktop apps and for CellScope. The app keeps a console window by default for
+ADB diagnostics; configure with `-DCELLSCOPE_WIN_CONSOLE=OFF` for a pure GUI
+build.
 
 ### Linux
 
@@ -88,6 +102,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/cellscope
 ```
+
+Linux camera access normally uses `/dev/video*` rather than an OS permission
+dialog. If opening the camera fails, check that the device exists and that your
+user is in the `video` group, then log out/in. Flatpak and Snap builds also need
+camera permission from their sandbox/portal. The camera panel shows
+**Retry camera** with the relevant hint; PipeWire/portal prompts are handled as
+a pending permission state.
 
 The user must be able to open `/dev/video*` (usually membership in the `video`
 group) and must have working Android udev rules for adb.

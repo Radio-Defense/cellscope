@@ -133,6 +133,8 @@ typedef struct App {
     Ui ui;
     Camera cam;
     bool camera_ok;
+    bool camera_permission_requested;
+    int64_t last_camera_retry_ms;
     char camera_error[512];
     char project_root[CS_PATH_MAX];
     PythonRuntime runtime;
@@ -242,6 +244,7 @@ void app_handle_event(App *app, const SDL_Event *e);
 void app_request_check(App *app);
 void app_retry_runtime(App *app);
 void app_toggle_pause(App *app);
+bool app_retry_camera(App *app, bool notify);
 void app_export_json(App *app);
 void app_notify(App *app, bool error, const char *fmt, ...);
 void app_copy_diagnostics(App *app);

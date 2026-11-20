@@ -1,4 +1,5 @@
 #include "app.h"
+#include "camera_platform.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -284,9 +285,12 @@ static void draw_header(App *app, UiState *s)
     } else if (app->image_mode) {
         cs_strlcpy(cam_text, "TEST IMAGE", sizeof(cam_text));
         cam_col = UI_BLUE;
-    } else if (app->camera_ok && app->cam.permission_pending) {
+    } else if (app->cam.permission_pending) {
         cs_strlcpy(cam_text, "CAMERA PERMISSION", sizeof(cam_text));
         cam_col = UI_AMBER;
+    } else if (app->cam.permission_denied) {
+        cs_strlcpy(cam_text, "CAMERA BLOCKED", sizeof(cam_text));
+        cam_col = UI_RED;
     } else if (app->camera_ok && app->cam.active) {
         snprintf(cam_text, sizeof(cam_text), "LOCAL CAM · %.22s", app->cam.name);
         cam_col = UI_ACCENT;
@@ -458,31 +462,51 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         SDL_FRect dst = {p.x + (p.w - fit_w) / 2, p.y + (p.h - fit_h) / 2, fit_w, fit_h};
         SDL_RenderTexture(ui->ren, tex, NULL, &dst);
     } else if (!app->demo) {
+        bool pending = app->cam.permission_pending;
+        bool denied = app->cam.permission_denied;
         const char *title = "No camera";
         const char *sub = app->camera_error[0] ? app->camera_error
-                                               : "Use --demo or --image to test the reader.";
-        if (app->camera_ok && app->cam.permission_pending) {
-            title = "Camera permission";
-            sub = "Allow access in the system prompt.";
-        } else if (app->camera_ok && app->cam.permission_denied) {
+                                               : camera_platform_hint();
+        if (pending) {
+            title = "Camera permission required";
+            sub = "A system camera permission dialog should be open. If it is not "
+                  "visible, use Camera settings below.";
+        } else if (denied) {
             title = "Camera access denied";
-            sub = "Enable CellScope in System Settings → Privacy & Security → Camera.";
+            sub = camera_platform_hint();
+        } else if (!app->camera_ok) {
+            title = "Camera unavailable";
         }
-        ui_text_center(ui, FONT_SEMIBOLD, p.x + p.w / 2, p.y + p.h / 2 - 18, 15, UI_MUTED,
+        ui_text_center(ui, FONT_SEMIBOLD, p.x + p.w / 2, p.y + p.h / 2 - 30, 15, UI_MUTED,
                        title);
-        ui_text_wrapped(ui, p.x + p.w * 0.2f, p.y + p.h / 2 + 4, p.w * 0.6f, 10.0f,
-                        UI_FAINT, 3, sub);
-        if (!app->camera_ok) {
-            UiRect retry = ui_rect(p.x + p.w / 2 - 48, p.y + p.h / 2 + 46, 96, 28);
-            if (ui_button(ui, retry, "Retry camera", BUTTON_SECONDARY, true)) {
-                char err[512];
-                app->camera_error[0] = '\0';
-                if (camera_init(&app->cam, app->ren, app->camera_index, err, sizeof(err))) {
-                    app->camera_ok = true;
-                    app_notify(app, false, "Camera connected: %s", app->cam.name);
+        ui_text_wrapped(ui, p.x + p.w * 0.14f, p.y + p.h / 2 - 8, p.w * 0.72f, 9.6f,
+                        UI_FAINT, 4, sub);
+        float button_y = p.y + p.h / 2 + 56;
+        bool show_settings = camera_platform_can_open_settings();
+        bool show_relaunch = camera_platform_can_relaunch() && (pending || denied);
+        float bw_retry = 104, bw_settings = 112, bw_relaunch = 108, bgap = 8;
+        float total = bw_retry + (show_settings ? bw_settings + bgap : 0) +
+                      (show_relaunch ? bw_relaunch + bgap : 0);
+        float bx = p.x + p.w / 2 - total / 2;
+        UiRect retry = ui_rect(bx, button_y, bw_retry, 30);
+        if (ui_button(ui, retry, "Retry camera", BUTTON_SECONDARY, true))
+            app_retry_camera(app, true);
+        bx += bw_retry + bgap;
+        if (show_settings) {
+            UiRect settings_cam = ui_rect(bx, button_y, bw_settings, 30);
+            if (ui_button(ui, settings_cam, "Camera settings", BUTTON_SECONDARY, true)) {
+                if (!camera_platform_open_settings())
+                    app_notify(app, true, "Could not open the camera settings page.");
+            }
+            bx += bw_settings + bgap;
+        }
+        if (show_relaunch) {
+            UiRect relaunch = ui_rect(bx, button_y, bw_relaunch, 30);
+            if (ui_button(ui, relaunch, "Relaunch app", BUTTON_SECONDARY, true)) {
+                if (camera_platform_relaunch()) {
+                    SDL_SetAtomicInt(&app->quit, 1);
                 } else {
-                    cs_strlcpy(app->camera_error, err, sizeof(app->camera_error));
-                    app_notify(app, true, "Camera: %s", err);
+                    app_notify(app, true, "Could not relaunch CellScope.app.");
                 }
             }
         }

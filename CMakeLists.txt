@@ -2,12 +2,18 @@ cmake_minimum_required(VERSION 3.20)
 
 project(CellScope VERSION 0.2.0 LANGUAGES C)
 
+if(APPLE)
+  enable_language(OBJC)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
 option(CELLSCOPE_BUILD_TESTS "Build the unit tests" ON)
 option(CELLSCOPE_WIN_CONSOLE "Keep a console window on Windows for diagnostics" ON)
+set(CELLSCOPE_CODESIGN_IDENTITY "-" CACHE STRING
+    "macOS code-signing identity; '-' means ad-hoc")
 
 find_package(SDL3 CONFIG QUIET)
 if(NOT SDL3_FOUND)
@@ -58,6 +64,17 @@ set(CELLSCOPE_SOURCES
 )
 
 add_executable(cellscope ${CELLSCOPE_SOURCES})
+if(APPLE)
+  target_sources(cellscope PRIVATE src/camera_mac.m)
+  find_library(AVFOUNDATION_FRAMEWORK AVFoundation REQUIRED)
+  find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+  find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+  find_library(OBJC_LIBRARY objc REQUIRED)
+  target_link_libraries(cellscope PRIVATE ${AVFOUNDATION_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
+                        ${APPKIT_FRAMEWORK} ${OBJC_LIBRARY})
+else()
+  target_sources(cellscope PRIVATE src/camera_platform.c)
+endif()
 target_link_libraries(cellscope PRIVATE
   cellcore
   SDL3::SDL3
@@ -116,7 +133,10 @@ if(APPLE)
   find_program(CODESIGN_EXECUTABLE codesign)
   if(CODESIGN_EXECUTABLE)
     add_custom_command(TARGET cellscope POST_BUILD
-      COMMAND ${CODESIGN_EXECUTABLE} --force --deep --sign - "$<TARGET_BUNDLE_DIR:cellscope>"
+      COMMAND ${CODESIGN_EXECUTABLE} --force --deep
+              --sign "${CELLSCOPE_CODESIGN_IDENTITY}"
+              --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CellScope.entitlements"
+              "$<TARGET_BUNDLE_DIR:cellscope>"
       COMMENT "Ad-hoc signing CellScope.app for camera permission"
     )
   endif()
