@@ -8,14 +8,16 @@ state and a webcam at the same time.
   downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
   and their RSSI in dBm.
 - **Right side:** full-height preview from the webcam attached to the local
-  machine (never the Android phone), with a meter alignment guide. While a
-  device screen is visible, a live card shows the reading extracted from every
-  processed frame. Reader status, confidence, raw answer, last-capture preview,
-  consensus result, and setup/folder controls are overlaid in this pane; there
-  is no separate meter-reader pane.
-- **Left side:** the cell-samples list stacked directly above the frequency
-  readings list. The readings table contains timestamp, Hz value, and saved
-  screenshot filename.
+  machine (never the Android phone), with a corner-only alignment guide and a
+  lower-right **LIVE DETECTION** box. The box shows live readings, then a green
+  check and the consensus value (or a red X and “Try again.” on failure) for
+  three seconds. Setup/folder controls are overlaid here; there is no separate
+  meter-reader pane and no last-capture thumbnail.
+- **Left side:** two Finder-style grid lists stacked vertically. Both have
+  fixed column headers, zebra rows, and vertical/horizontal scrollbars as
+  needed. **CELL SAMPLES** exposes time, operator, band, RAT, PCI, ARFCN,
+  downlink/uplink frequencies, TAC, eNB/CID, bandwidth and CA; **READINGS**
+  exposes timestamp, screenshot filename, Hz, GHz, confidence and backend.
 - **Top centre:** a large play/pause control. CellScope starts paused: the
   webcam, ADB polling, VLM extraction, dataset session and table stay idle until
   you press play. The window opens maximized with its normal title bar visible;

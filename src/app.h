@@ -239,8 +239,10 @@ typedef struct App {
     MeterTracker tracker;
 
     float cell_scroll;
+    float cell_scroll_x;
     bool cell_follow;
     float meter_scroll;
+    float meter_scroll_x;
     bool meter_follow;
     int64_t selected_meter_ts;
     int selected_meter;

@@ -32,15 +32,6 @@ typedef struct {
     UiRect footer;
 } Layout;
 
-static UiColor rat_color(const char *rat)
-{
-    if (!rat) return UI_FAINT;
-    if (strstr(rat, "5G")) return UI_ACCENT;
-    if (strstr(rat, "LTE")) return UI_BLUE;
-    if (strstr(rat, "UMTS") || strstr(rat, "GSM")) return UI_AMBER;
-    return UI_MUTED;
-}
-
 static UiColor kind_color(VlmBackend kind)
 {
     switch (kind) {
@@ -683,153 +674,190 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
 }
 
 
-static int wifi_entries(const char *text, uint32_t *ids, int *rssi, int max)
+typedef struct {
+    const char *label;
+    float width;
+} ListColumn;
+
+static float list_width(const ListColumn *cols, int n)
 {
-    if (!text || !*text) return 0;
+    float w = 0;
+    for (int i = 0; i < n; i++) w += cols[i].width;
+    return w;
+}
+
+static void list_scrollbar_v(Ui *ui, UiRect track, float scroll, float content, float view,
+                             float *out_scroll)
+{
+    if (content <= view + 1) return;
+    ui_round_rect(ui, track, track.w / 2, UI_COLOR(24, 34, 45, 210));
+    float max_scroll = content - view;
+    float th = CS_MAX(26.0f, track.h * view / content);
+    float t = max_scroll > 0 ? scroll / max_scroll : 0;
+    float ty = track.y + (track.h - th) * t;
+    UiRect thumb = ui_rect(track.x, ty, track.w, th);
+    ui_round_rect(ui, thumb, track.w / 2, UI_COLOR(92, 116, 136, 230));
+    if (ui->mouse_pressed && ui_rect_contains(track, ui->mx, ui->my)) {
+        float nt = (ui->my - track.y - th / 2) / CS_MAX(1.0f, track.h - th);
+        if (nt < 0) nt = 0;
+        if (nt > 1) nt = 1;
+        *out_scroll = nt * max_scroll;
+        ui_consume_click(ui);
+    }
+}
+
+static void list_scrollbar_h(Ui *ui, UiRect track, float scroll, float content, float view,
+                             float *out_scroll)
+{
+    if (content <= view + 1) return;
+    ui_round_rect(ui, track, track.h / 2, UI_COLOR(24, 34, 45, 210));
+    float max_scroll = content - view;
+    float tw = CS_MAX(26.0f, track.w * view / content);
+    float t = max_scroll > 0 ? scroll / max_scroll : 0;
+    float tx = track.x + (track.w - tw) * t;
+    UiRect thumb = ui_rect(tx, track.y, tw, track.h);
+    ui_round_rect(ui, thumb, track.h / 2, UI_COLOR(92, 116, 136, 230));
+    if (ui->mouse_pressed && ui_rect_contains(track, ui->mx, ui->my)) {
+        float nt = (ui->mx - track.x - tw / 2) / CS_MAX(1.0f, track.w - tw);
+        if (nt < 0) nt = 0;
+        if (nt > 1) nt = 1;
+        *out_scroll = nt * max_scroll;
+        ui_consume_click(ui);
+    }
+}
+
+static int wifi_best_dbm(const char *text)
+{
+    if (!text || !*text) return -999;
     char buf[768];
     cs_strlcpy(buf, text, sizeof(buf));
-    int total = 0;
+    int best = -999;
     char *save = NULL;
     for (char *p = strtok_r(buf, ";", &save); p; p = strtok_r(NULL, ";", &save)) {
         unsigned id = 0;
         int dbm = 0;
-        if (sscanf(p, "%u:%d", &id, &dbm) == 2) {
-            if (total < max) {
-                ids[total] = id;
-                rssi[total] = dbm;
-            }
-            total++;
-        }
+        if (sscanf(p, "%u:%d", &id, &dbm) == 2 && dbm > best) best = dbm;
     }
-    return total;
+    return best;
 }
 
 static void draw_cell_rows(App *app, UiState *s, UiRect body)
 {
     Ui *ui = &app->ui;
-    const float row_h = 54.0f;
+    static const ListColumn cols[] = {
+        {"TIME", 58},       {"OPERATOR", 145}, {"BAND", 46},  {"RAT", 66},
+        {"PCI", 76},        {"ARFCN", 92},     {"DL MHz", 82}, {"UL MHz", 82},
+        {"TAC", 42},        {"eNB / CID", 94}, {"BW", 50},    {"CA", 30},
+        {"WIFI dBm", 76},
+    };
+    const int ncols = (int)CS_ARRAY_LEN(cols);
+    const float row_h = 25.0f, header_h = 23.0f, sb_w = 7.0f, sb_h = 7.0f;
     int count = s->cell_count;
-    float content = count * row_h;
-    float view = body.h;
-    float max_scroll = CS_MAX(0.0f, content - view);
-    if (app->cell_follow)
-        app->cell_scroll = floorf(max_scroll / row_h) * row_h;
-    if (ui_rect_contains(body, ui->mx, ui->my) && ui->wheel != 0) {
-        app->cell_scroll -= ui->wheel * row_h * 1.4f;
-        ui->wheel = 0;
-    }
-    if (app->cell_scroll < 0) app->cell_scroll = 0;
-    if (app->cell_scroll > max_scroll) app->cell_scroll = max_scroll;
-    app->cell_follow = app->cell_scroll >= max_scroll - 1;
-
     if (count == 0) {
         float cx = body.x + body.w / 2;
         float cy = body.y + body.h / 2;
         ui_round_rect(ui, ui_rect(cx - 22, cy - 46, 44, 44), 12, UI_COLOR(22, 32, 42, 255));
-        ui_round_rect(ui, ui_rect(cx - 9, cy - 34, 18, 26), 4, UI_COLOR(8, 13, 18, 255));
-        ui_circle(ui, cx, cy - 8, 2, UI_ACCENT);
-        ui_text_center(ui, FONT_SEMIBOLD, cx, cy + 8, 13, UI_MUTED,
+        ui_text_center(ui, FONT_SEMIBOLD, cx, cy - 8, 13, UI_MUTED,
                        "Waiting for the first cell sample");
-        ui_text_center(ui, FONT_UI, cx, cy + 28, 9.8f, UI_FAINT,
+        ui_text_center(ui, FONT_UI, cx, cy + 14, 9.8f, UI_FAINT,
                        s->adb.state == ADB_STATE_CONNECTED
                            ? "Polling telephony.registry once per second."
                            : "Connect a phone over ADB to begin.");
         return;
     }
 
+    float content_w = list_width(cols, ncols);
+    float view_w = CS_MAX(80.0f, body.w - sb_w - 2);
+    bool has_h = content_w > view_w + 1;
+    float view_h = CS_MAX(40.0f, body.h - header_h - (has_h ? sb_h : 0));
+    float content_h = count * row_h;
+    float max_y = CS_MAX(0.0f, content_h - view_h);
+    float max_x = CS_MAX(0.0f, content_w - view_w);
+    if (app->cell_follow) app->cell_scroll = floorf(max_y / row_h) * row_h;
+    if (ui_rect_contains(body, ui->mx, ui->my) && ui->wheel != 0) {
+        if ((SDL_GetModState() & SDL_KMOD_SHIFT) && has_h)
+            app->cell_scroll_x -= ui->wheel * 42.0f;
+        else
+            app->cell_scroll -= ui->wheel * row_h * 1.5f;
+        ui->wheel = 0;
+    }
+    if (app->cell_scroll < 0) app->cell_scroll = 0;
+    if (app->cell_scroll > max_y) app->cell_scroll = max_y;
+    if (app->cell_scroll_x < 0) app->cell_scroll_x = 0;
+    if (app->cell_scroll_x > max_x) app->cell_scroll_x = max_x;
+    app->cell_follow = app->cell_scroll >= max_y - 1;
+
+    UiRect head = ui_rect(body.x, body.y, view_w, header_h);
+    ui_push_clip(ui, ui_rect(head.x, head.y, head.w, head.h));
+    ui_rect_fill(ui, head, UI_COLOR(17, 25, 33, 245));
+    float hx = head.x + 8 - app->cell_scroll_x;
+    for (int c = 0; c < ncols; c++) {
+        ui_text_ellipsis(ui, FONT_MONO, hx, head.y + 7, 7.6f, UI_FAINT,
+                         cols[c].width - 10, cols[c].label);
+        hx += cols[c].width;
+    }
+    ui_pop_clip(ui);
+    ui_line(ui, head.x, head.y + head.h - 1, head.x + head.w, head.y + head.h - 1,
+            UI_BORDER_SOFT, 1);
+
+    UiRect view = ui_rect(body.x, body.y + header_h, view_w, view_h);
     int start = (int)floorf(app->cell_scroll / row_h);
     float offset = app->cell_scroll - start * row_h;
-    float y = body.y - offset;
-    ui_push_clip(ui, body);
-    for (int i = start; i < count && y < body.y + body.h; i++, y += row_h) {
-        if (y + row_h < body.y) continue;
+    float y = view.y - offset;
+    ui_push_clip(ui, view);
+    for (int i = start; i < count && y < view.y + view.h; i++, y += row_h) {
+        if (y + row_h < view.y) continue;
         CellSample c = app_cell_at(app, i);
         bool newest = (i == count - 1);
-        UiRect row = ui_rect(body.x, y + 1, body.w - 6, row_h - 2);
-        bool hover = ui_rect_contains(row, ui->mx, ui->my);
-        if (hover) ui_round_rect(ui, row, 7, UI_COLOR(24, 34, 45, 160));
-        else if (i % 2 == 0) ui_round_rect(ui, row, 7, UI_COLOR(14, 21, 28, 110));
-        if (newest) ui_round_rect(ui, ui_rect(row.x, row.y + 8, 2, row.h - 16), 1, UI_ACCENT);
+        UiRect row = ui_rect(view.x, y, view.w, row_h - 1);
+        if (ui_rect_contains(row, ui->mx, ui->my))
+            ui_rect_fill(ui, row, UI_COLOR(25, 37, 48, 190));
+        else if (i % 2 == 0)
+            ui_rect_fill(ui, row, UI_COLOR(14, 21, 28, 120));
+        if (newest) ui_rect_fill(ui, ui_rect(row.x, row.y + 4, 2, row.h - 8),
+                                 UI_ACCENT);
 
-        const float wifi_w = 148.0f;
-        float wifi_x = row.x + row.w - wifi_w;
-        ui_line(ui, wifi_x - 8, row.y + 5, wifi_x - 8, row.y + row.h - 5,
-                UI_BORDER_SOFT, 1);
-
-        char time[24];
+        char time[20];
         cs_format_time(c.ts_ms, time, sizeof(time));
-        ui_text_font(ui, FONT_MONO, row.x + 10, row.y + 6, 10.4f,
-                     newest ? UI_ACCENT : UI_FAINT, time);
-
         char op[160];
         if (c.operator_name[0] && strcmp(c.operator_name, "—") != 0)
             snprintf(op, sizeof(op), "%s · %s", c.plmn[0] ? c.plmn : "—", c.operator_name);
         else
             snprintf(op, sizeof(op), "%s", c.plmn[0] ? c.plmn : "—");
-        ui_text_ellipsis(ui, FONT_SEMIBOLD, row.x + 80, row.y + 5, 11.0f, UI_TEXT, 220, op);
-
-        float chip_x = row.x + 300;
-        draw_chip(ui, chip_x, row.y + 5, c.rat[0] ? c.rat : "—", rat_color(c.rat),
-                  UI_COLOR(22, 35, 40, 210));
-        chip_x += ui_text_width(ui, FONT_SEMIBOLD, 9.2f, c.rat) + 20;
-        if (c.ca) draw_chip(ui, chip_x, row.y + 5, "CA", UI_AMBER, UI_COLOR(44, 34, 18, 220));
-        if (c.demo) {
-            chip_x += c.ca ? 38 : 0;
-            draw_chip(ui, chip_x, row.y + 5, "DEMO", UI_VIOLET, UI_COLOR(36, 28, 54, 210));
-        }
-
-        char l2[256];
-        snprintf(l2, sizeof(l2), "MCC %s · MNC %s · TAC %s",
-                 c.mcc[0] ? c.mcc : "—", c.mnc[0] ? c.mnc : "—",
-                 c.tac[0] ? c.tac : "—");
-        ui_text_font(ui, FONT_MONO, row.x + 10, row.y + 24, 9.4f, UI_MUTED, l2);
-        snprintf(l2, sizeof(l2), "eNB %s · CID %s", c.enb[0] ? c.enb : "—",
+        char dl[48], ul[48], ec[48], wifi[24];
+        int wifi_dbm = wifi_best_dbm(c.wifi);
+        if (wifi_dbm > -999) snprintf(wifi, sizeof(wifi), "%d", wifi_dbm);
+        else cs_strlcpy(wifi, "—", sizeof(wifi));
+        snprintf(dl, sizeof(dl), "%s", c.f_dl[0] ? c.f_dl : "—");
+        snprintf(ul, sizeof(ul), "%s", c.f_ul[0] ? c.f_ul : "—");
+        snprintf(ec, sizeof(ec), "%s / %s", c.enb[0] ? c.enb : "—",
                  c.cid[0] ? c.cid : "—");
-        ui_text_font(ui, FONT_MONO, row.x + 180, row.y + 24, 9.4f, UI_MUTED, l2);
-        snprintf(l2, sizeof(l2), "PCI %s", c.pci[0] ? c.pci : "—");
-        ui_text_font(ui, FONT_MONO, row.x + 300, row.y + 24, 9.4f, UI_MUTED, l2);
-        snprintf(l2, sizeof(l2), "TA %s", c.ta[0] ? c.ta : "—");
-        ui_text_font(ui, FONT_MONO, row.x + 405, row.y + 24, 9.4f, UI_MUTED, l2);
-
-        char l3[300];
-        snprintf(l3, sizeof(l3), "ARFCN %s · %s · BW %s", c.arfcn[0] ? c.arfcn : "—",
-                 c.band[0] ? c.band : "—", c.bw[0] ? c.bw : "—");
-        ui_text_ellipsis(ui, FONT_MONO, row.x + 10, row.y + 39, 9.2f,
-                         UI_COLOR(105, 124, 140, 255), (wifi_x - row.x) * 0.52f, l3);
-        char lf[200];
-        snprintf(lf, sizeof(lf), "DL %s · UL %s MHz", c.f_dl[0] ? c.f_dl : "—",
-                 c.f_ul[0] ? c.f_ul : "—");
-        ui_text_right(ui, FONT_MONO, wifi_x - 12, row.y + 39, 9.2f,
-                      UI_COLOR(140, 165, 185, 255), lf);
-
-        uint32_t wids[4];
-        int wrssi[4];
-        int wn = wifi_entries(c.wifi, wids, wrssi, 4);
-        ui_text_font(ui, FONT_SEMIBOLD, wifi_x, row.y + 4, 7.2f, UI_FAINT, "WIFI · dBm");
-        if (wn > 3) {
-            char more[24];
-            snprintf(more, sizeof(more), "+%d", wn - 3);
-            ui_text_right(ui, FONT_MONO, row.x + row.w - 8, row.y + 4, 7.2f, UI_FAINT,
-                          more);
-        }
-        if (wn == 0) {
-            ui_text_font(ui, FONT_MONO, wifi_x, row.y + 20, 8.2f, UI_FAINT, "—");
-        } else {
-            for (int wi = 0; wi < wn && wi < 3; wi++) {
-                char ap[48];
-                snprintf(ap, sizeof(ap), "#%u", wids[wi]);
-                ui_text_font(ui, FONT_MONO, wifi_x, row.y + 17 + wi * 11, 7.7f,
-                             UI_COLOR(150, 170, 190, 255), ap);
-                char dbm[24];
-                snprintf(dbm, sizeof(dbm), "%d", wrssi[wi]);
-                ui_text_right(ui, FONT_MONO, row.x + row.w - 8, row.y + 17 + wi * 11,
-                              7.7f, wrssi[wi] >= -60 ? UI_ACCENT : UI_FAINT, dbm);
-            }
+        const char *vals[] = {
+            time, op, c.band[0] ? c.band : "—", c.rat[0] ? c.rat : "—",
+            c.pci[0] ? c.pci : "—", c.arfcn[0] ? c.arfcn : "—", dl, ul,
+            c.tac[0] ? c.tac : "—", ec, c.bw[0] ? c.bw : "—", c.ca ? "CA" : "—",
+            wifi,
+        };
+        float x = view.x + 8 - app->cell_scroll_x;
+        for (int col = 0; col < ncols; col++) {
+            UiColor fg = UI_COLOR(172, 194, 210, 255);
+            if (col == 0) fg = newest ? UI_ACCENT : UI_FAINT;
+            else if (col == 2) fg = c.ca ? UI_ACCENT : UI_TEXT;
+            else if (col == 11 && c.ca) fg = UI_AMBER;
+            else if (col == 12 && wifi_dbm >= -60) fg = UI_ACCENT;
+            ui_text_ellipsis(ui, FONT_MONO, x, row.y + 7, 8.4f, fg,
+                             cols[col].width - 10, vals[col]);
+            x += cols[col].width;
         }
     }
     ui_pop_clip(ui);
-    ui_scrollbar(ui, ui_rect(body.x + body.w - 3, body.y + 2, 3, body.h - 4), app->cell_scroll,
-                 content, view);
+
+    list_scrollbar_v(ui, ui_rect(body.x + body.w - sb_w, head.y, sb_w,
+                                 body.h - (has_h ? sb_h : 0)),
+                     app->cell_scroll, content_h, view_h, &app->cell_scroll);
+    if (has_h)
+        list_scrollbar_h(ui, ui_rect(view.x, body.y + body.h - sb_h, view.w, sb_h),
+                         app->cell_scroll_x, content_w, view_w, &app->cell_scroll_x);
 }
 
 static void draw_cell_panel(App *app, UiState *s, UiRect r)
@@ -871,21 +899,13 @@ static const char *ui_shot_name(const MeterSample *m)
 static void draw_meter_rows(App *app, UiState *s, UiRect body)
 {
     Ui *ui = &app->ui;
-    const float row_h = 52.0f;
+    static const ListColumn cols[] = {
+        {"TIME", 62}, {"SCREENSHOT", 190}, {"FREQUENCY (Hz)", 126},
+        {"GHz", 92}, {"CONF", 52}, {"BACKEND", 112},
+    };
+    const int ncols = (int)CS_ARRAY_LEN(cols);
+    const float row_h = 26.0f, header_h = 23.0f, sb_w = 7.0f, sb_h = 7.0f;
     int count = s->meter_count;
-    float content = count * row_h;
-    float view = body.h;
-    float max_scroll = CS_MAX(0.0f, content - view);
-    if (app->meter_follow)
-        app->meter_scroll = floorf(max_scroll / row_h) * row_h;
-    if (ui_rect_contains(body, ui->mx, ui->my) && ui->wheel != 0) {
-        app->meter_scroll -= ui->wheel * row_h * 1.4f;
-        ui->wheel = 0;
-    }
-    if (app->meter_scroll < 0) app->meter_scroll = 0;
-    if (app->meter_scroll > max_scroll) app->meter_scroll = max_scroll;
-    app->meter_follow = app->meter_scroll >= max_scroll - 1;
-
     if (count == 0) {
         float cx = body.x + body.w / 2;
         float cy = body.y + body.h / 2;
@@ -898,42 +918,89 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
         return;
     }
 
+    float content_w = list_width(cols, ncols);
+    float view_w = CS_MAX(80.0f, body.w - sb_w - 2);
+    bool has_h = content_w > view_w + 1;
+    float view_h = CS_MAX(40.0f, body.h - header_h - (has_h ? sb_h : 0));
+    float content_h = count * row_h;
+    float max_y = CS_MAX(0.0f, content_h - view_h);
+    float max_x = CS_MAX(0.0f, content_w - view_w);
+    if (app->meter_follow) app->meter_scroll = floorf(max_y / row_h) * row_h;
+    if (ui_rect_contains(body, ui->mx, ui->my) && ui->wheel != 0) {
+        if ((SDL_GetModState() & SDL_KMOD_SHIFT) && has_h)
+            app->meter_scroll_x -= ui->wheel * 42.0f;
+        else
+            app->meter_scroll -= ui->wheel * row_h * 1.5f;
+        ui->wheel = 0;
+    }
+    if (app->meter_scroll < 0) app->meter_scroll = 0;
+    if (app->meter_scroll > max_y) app->meter_scroll = max_y;
+    if (app->meter_scroll_x < 0) app->meter_scroll_x = 0;
+    if (app->meter_scroll_x > max_x) app->meter_scroll_x = max_x;
+    app->meter_follow = app->meter_scroll >= max_y - 1;
+
+    UiRect head = ui_rect(body.x, body.y, view_w, header_h);
+    ui_push_clip(ui, ui_rect(head.x, head.y, head.w, head.h));
+    ui_rect_fill(ui, head, UI_COLOR(17, 25, 33, 245));
+    float hx = head.x + 8 - app->meter_scroll_x;
+    for (int c = 0; c < ncols; c++) {
+        bool right = (c == 2 || c == 3 || c == 4);
+        if (right)
+            ui_text_right(ui, FONT_MONO, hx + cols[c].width - 10, head.y + 7, 7.6f,
+                          UI_FAINT, cols[c].label);
+        else
+            ui_text_ellipsis(ui, FONT_MONO, hx, head.y + 7, 7.6f, UI_FAINT,
+                             cols[c].width - 10, cols[c].label);
+        hx += cols[c].width;
+    }
+    ui_pop_clip(ui);
+    ui_line(ui, head.x, head.y + head.h - 1, head.x + head.w, head.y + head.h - 1,
+            UI_BORDER_SOFT, 1);
+
+    UiRect view = ui_rect(body.x, body.y + header_h, view_w, view_h);
     int start = (int)floorf(app->meter_scroll / row_h);
     float offset = app->meter_scroll - start * row_h;
-    float y = body.y - offset;
-    ui_push_clip(ui, body);
-    for (int i = start; i < count && y < body.y + body.h; i++, y += row_h) {
-        if (y + row_h < body.y) continue;
+    float y = view.y - offset;
+    ui_push_clip(ui, view);
+    for (int i = start; i < count && y < view.y + view.h; i++, y += row_h) {
+        if (y + row_h < view.y) continue;
         MeterSample m = app_meter_at(app, i);
         bool newest = (i == count - 1);
         bool selected = (app->selected_meter_ts == m.ts_ms);
-        UiRect row = ui_rect(body.x, y + 1, body.w - 6, row_h - 2);
-        if (selected) ui_round_rect(ui, row, 7, UI_COLOR(30, 45, 56, 210));
+        UiRect row = ui_rect(view.x, y, view.w, row_h - 1);
+        if (selected) ui_rect_fill(ui, row, UI_COLOR(30, 45, 56, 220));
         else if (ui_rect_contains(row, ui->mx, ui->my))
-            ui_round_rect(ui, row, 7, UI_COLOR(24, 34, 45, 160));
-        else if (i % 2 == 0) ui_round_rect(ui, row, 7, UI_COLOR(14, 21, 28, 110));
-        if (newest) ui_round_rect(ui, ui_rect(row.x, row.y + 8, 2, row.h - 16), 1, UI_ACCENT);
+            ui_rect_fill(ui, row, UI_COLOR(25, 37, 48, 190));
+        else if (i % 2 == 0)
+            ui_rect_fill(ui, row, UI_COLOR(14, 21, 28, 120));
+        if (newest) ui_rect_fill(ui, ui_rect(row.x, row.y + 4, 2, row.h - 8),
+                                 UI_ACCENT);
 
-        ui_text_font(ui, FONT_MONO, row.x + 10, row.y + 9, 10.4f,
-                     newest ? UI_ACCENT : UI_FAINT, m.time_text);
-        const char *shot = ui_shot_name(&m);
-        float shot_w = CS_MIN(180.0f, row.w * 0.30f);
-        ui_text_ellipsis(ui, FONT_MONO, row.x + 110, row.y + 11, 8.2f,
-                         shot[0] ? UI_COLOR(150, 178, 198, 255) : UI_FAINT,
-                         shot_w, shot[0] ? shot : "—");
-        char hz[64];
+        char hz[64], eng[64], conf[16];
         cs_format_hz(m.hz, hz, sizeof(hz));
-        ui_text_right(ui, FONT_MONO, row.x + row.w - 10, row.y + 6, 12.6f, UI_TEXT, hz);
-        char sub[200];
-        char eng[64];
         cs_format_eng(m.hz, eng, sizeof(eng));
-        snprintf(sub, sizeof(sub), "%s · %d%% · %s", eng, (int)(m.confidence * 100.0),
-                 m.backend[0] ? m.backend : "reader");
-        ui_text_right(ui, FONT_MONO, row.x + row.w - 10, row.y + 27, 8.8f, UI_FAINT, sub);
-        if (m.path[0]) {
-            draw_dot(ui, row.x + 14, row.y + 37, UI_BLUE);
-            ui_text_font(ui, FONT_MONO, row.x + 22, row.y + 32, 7.8f, UI_BLUE, "SAVED");
-        }
+        snprintf(conf, sizeof(conf), "%d%%", (int)(m.confidence * 100.0));
+        const char *shot = ui_shot_name(&m);
+        float x = view.x + 8 - app->meter_scroll_x;
+        ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.6f,
+                         newest ? UI_ACCENT : UI_FAINT, cols[0].width - 10, m.time_text);
+        x += cols[0].width;
+        ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.2f,
+                         shot[0] ? UI_COLOR(150, 178, 198, 255) : UI_FAINT,
+                         cols[1].width - 10, shot[0] ? shot : "—");
+        x += cols[1].width;
+        ui_text_right(ui, FONT_MONO, x + cols[2].width - 10, row.y + 7, 10.4f,
+                      UI_TEXT, hz);
+        x += cols[2].width;
+        ui_text_right(ui, FONT_MONO, x + cols[3].width - 10, row.y + 8, 8.4f,
+                      UI_FAINT, eng);
+        x += cols[3].width;
+        ui_text_right(ui, FONT_MONO, x + cols[4].width - 10, row.y + 8, 8.4f,
+                      UI_FAINT, conf);
+        x += cols[4].width;
+        ui_text_ellipsis(ui, FONT_MONO, x, row.y + 8, 8.2f, UI_FAINT,
+                         cols[5].width - 10, m.backend[0] ? m.backend : "reader");
+
         if (ui_rect_contains(row, ui->mx, ui->my) && ui->mouse_pressed) {
             app->selected_meter_ts = m.ts_ms;
             app->selected_meter = i;
@@ -942,8 +1009,13 @@ static void draw_meter_rows(App *app, UiState *s, UiRect body)
         }
     }
     ui_pop_clip(ui);
-    ui_scrollbar(ui, ui_rect(body.x + body.w - 3, body.y + 2, 3, body.h - 4),
-                 app->meter_scroll, content, view);
+
+    list_scrollbar_v(ui, ui_rect(body.x + body.w - sb_w, head.y, sb_w,
+                                 body.h - (has_h ? sb_h : 0)),
+                     app->meter_scroll, content_h, view_h, &app->meter_scroll);
+    if (has_h)
+        list_scrollbar_h(ui, ui_rect(view.x, body.y + body.h - sb_h, view.w, sb_h),
+                         app->meter_scroll_x, content_w, view_w, &app->meter_scroll_x);
 }
 
 static void draw_meter_panel(App *app, UiState *s, UiRect r)
@@ -955,12 +1027,7 @@ static void draw_meter_panel(App *app, UiState *s, UiRect r)
     snprintf(count, sizeof(count), "%d", s->meter_count);
     draw_chip(ui, r.x + 16 + ui_text_width(ui, FONT_SEMIBOLD, 9.2f, "READINGS") + 10,
               r.y + 10, count, UI_MUTED, UI_COLOR(26, 37, 48, 255));
-    ui_text_font(ui, FONT_MONO, r.x + 18, r.y + 40, 8.0f, UI_FAINT, "TIME");
-    ui_text_font(ui, FONT_MONO, r.x + 118, r.y + 40, 8.0f, UI_FAINT, "SCREENSHOT");
-    ui_text_right(ui, FONT_MONO, r.x + r.w - 18, r.y + 40, 8.0f, UI_FAINT,
-                  "FREQUENCY (Hz)");
-    ui_line(ui, r.x + 12, r.y + 56.5f, r.x + r.w - 12, r.y + 56.5f, UI_BORDER_SOFT, 1);
-    draw_meter_rows(app, s, ui_rect(r.x + 8, r.y + 60, r.w - 16, r.h - 66));
+    draw_meter_rows(app, s, ui_rect(r.x + 8, r.y + 44, r.w - 16, r.h - 50));
 }
 
 static void draw_footer(App *app, UiState *s)
