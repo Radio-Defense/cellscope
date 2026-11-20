@@ -11,4 +11,3 @@ meter_dataset/
 docs/*.tmp
 __pycache__/
 *.pyc
-example.png
