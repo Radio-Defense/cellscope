@@ -15,8 +15,9 @@ state and a webcam at the same time.
   **3 seconds**. The value is converted to Hz, and the exact best frame is saved.
 - **Bottom right:** timestamped frequency readings, each with the filename of
   its saved screenshot.
-- **Top centre:** a large play/pause control for both the local webcam pipeline
-  and ADB polling. The window opens fullscreen by default (1440×900 logical
+- **Top centre:** a large play/pause control. CellScope starts paused: the
+  webcam, ADB polling, VLM extraction, dataset session and table stay idle until
+  you press play. The window opens fullscreen by default (1440×900 logical
   layout, letterboxed on other aspect ratios).
 - **On launch:** a step-by-step modal explains how to connect the phone over
   ADB. It only disappears when a device is authorized; failures show concrete
@@ -25,8 +26,11 @@ state and a webcam at the same time.
   and MiniMind assets, then starts the local reader bridge in the background.
   A downloaded Hugging Face model recorded in `settings.json` takes precedence.
 
-Camera frames and readings stay local. No telemetry, no cloud inference, and no
-images are uploaded. The one-time runtime/model downloads come from uv's GitHub
+Camera frames and readings stay local. Webcam frames are converted to RGB24,
+scaled to at most 1024 px wide with preserved aspect ratio, PNG-encoded, and sent
+as a data URL. The HF bridge decodes them as RGB and preserves the processor's
+`pixel_attention_mask`; this is what keeps SmolVLM's image tokens aligned. No
+telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
 releases, ModelScope, and Hugging Face if you download an HF model.
 
 ![CellScope demo](docs/screenshot-main.png)
@@ -327,10 +331,14 @@ is paused/stopped). During the event:
   confidence and frame quality;
 - the cluster with the greatest aggregate weight wins; within it, the
   highest-quality frame is selected;
-- when the screen disappears, the winning reading is added to the bottom-right
-  table **immediately**, with its frame filename and the epoch timestamp when
-  that webcam frame appeared;
-- the right-top pane displays the winning value for **3 seconds**, then clears.
+- **as soon as a stable consensus is reached** (at least five readings, a
+  leader with four votes and 65% of the weight), the winning row is added to
+  the bottom-right table **immediately**, without waiting for pause or screen
+  loss. It contains the frame filename and the epoch timestamp when that webcam
+  frame appeared;
+- the right-top pane displays the winning value for **3 seconds**, then clears;
+  collection continues until the screen leaves, but that visibility event is
+  not recorded twice.
 
 No fixed 12-frame sample is used for the decision. The 12-frame value in the UI
 is only the staging/burst indicator. The table timestamp is compensated for VLM
@@ -344,8 +352,11 @@ time.
 ### Capture sessions and datasets
 
 `~/.cellscope/datasets/` contains one timestamped folder per capture session
-(for example `20261120_193716/`). A session is created at launch and every time
-the play button resumes capture; pausing ends the current session. Each folder
+(for example `20261120_193716/`). A session is created the first time play is
+pressed and every time play resumes capture; pausing ends the current session.
+Before the first play there is no session folder, no webcam capture, no ADB
+sample polling and no VLM extraction. `--autoplay` is available for automated
+tests and screenshots; normal app use waits for play. Each folder
 contains:
 
 ```text

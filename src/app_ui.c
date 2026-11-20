@@ -468,7 +468,10 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         const char *title = "No camera";
         const char *sub = app->camera_error[0] ? app->camera_error
                                                : camera_platform_hint();
-        if (pending) {
+        if (app->paused) {
+            title = "Capture paused";
+            sub = "Press play to start the webcam, ADB polling and meter extraction.";
+        } else if (pending) {
             title = "Camera permission required";
             sub = "A system camera permission dialog should be open. If it is not "
                   "visible, use Camera settings below.";
@@ -483,14 +486,14 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         ui_text_wrapped(ui, p.x + p.w * 0.14f, p.y + p.h / 2 - 8, p.w * 0.72f, 9.6f,
                         UI_FAINT, 4, sub);
         float button_y = p.y + p.h / 2 + 56;
-        bool show_settings = camera_platform_can_open_settings();
+        bool show_settings = camera_platform_can_open_settings() && !app->paused;
         bool show_relaunch = camera_platform_can_relaunch() && (pending || denied);
         float bw_retry = 104, bw_settings = 112, bw_relaunch = 108, bgap = 8;
         float total = bw_retry + (show_settings ? bw_settings + bgap : 0) +
                       (show_relaunch ? bw_relaunch + bgap : 0);
         float bx = p.x + p.w / 2 - total / 2;
         UiRect retry = ui_rect(bx, button_y, bw_retry, 30);
-        if (ui_button(ui, retry, "Retry camera", BUTTON_SECONDARY, true))
+        if (!app->paused && ui_button(ui, retry, "Retry camera", BUTTON_SECONDARY, true))
             app_retry_camera(app, true);
         bx += bw_retry + bgap;
         if (show_settings) {

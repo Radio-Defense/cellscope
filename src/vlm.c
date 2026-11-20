@@ -22,27 +22,11 @@ extern unsigned char *stbi_write_png_to_mem(const unsigned char *pixels,
 #define VLM_PROMPT_MAX 2048
 
 static const char *k_prompt =
-    "You are an optical reader for a device that displays a frequency measurement. "
-    "The device can be any bench frequency counter, handheld frequency meter, radio, "
-    "signal generator, or similar instrument; do not assume a particular model or "
-    "layout. Look at the attached camera frame. Normally exactly one device screen "
-    "showing a frequency measurement is visible. If several displays are present, "
-    "read the largest, most central frequency-measurement display and ignore the "
-    "others. The screen may be small, angled, far away, mirrored, or rotated "
-    "(90/180/270 degrees); mentally correct the orientation before reading. "
-    "Read only the main measured frequency value, exactly as displayed. Ignore model "
-    "names, channel names, timers, battery icons, voltage, power, signal strength, and "
-    "other numeric labels. Never invent or autocorrect digits. Determine the unit "
-    "printed with the value: Hz, kHz, MHz or GHz. Do not convert the value; CellScope "
-    "converts reading + unit to Hz. Report this frame independently: never repeat a "
-    "previous frame's value, never wait for a stable value, and never choose a best "
-    "reading yourself. The host displays every frame's result and selects the best "
-    "afterwards. Respond with JSON only, no markdown, exactly:\n"
-    "{\"visible\":true,\"reading\":\"123.456789\",\"unit\":\"MHz\",\"confidence\":0.93}\n"
-    "visible=true means a device screen is visible in the frame, even if the digits "
-    "are temporarily unreadable; in that case set reading to \"\". Use visible=false "
-    "only when no device screen is visible. The reading string must contain digits "
-    "and at most one decimal separator.";
+    "Read the frequency shown on the display. The screen may be rotated or mirrored. "
+    "Answer with JSON only: "
+    "{\"visible\":true,\"reading\":\"2536.8628\",\"unit\":\"MHz\",\"confidence\":0.9}. "
+    "Use reading \"\" if the screen is visible but unreadable; visible false if no "
+    "screen is visible.";
 
 typedef struct {
     char *data;

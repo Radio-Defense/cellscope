@@ -205,7 +205,8 @@ def make_handler(model, processor, device, dtype, lock, args):
                 # common multimodal generation inputs only.
                 allowed = {
                     "input_ids", "attention_mask", "pixel_values",
-                    "pixel_values_videos", "image_sizes", "image_grid_thw",
+                    "pixel_attention_mask", "pixel_values_videos", "image_sizes",
+                    "image_grid_thw",
                     "token_type_ids", "mm_token_type_ids", "aspect_ratio_ids",
                     "aspect_ratio_mask", "cross_attention_mask",
                 }
@@ -225,7 +226,8 @@ def make_handler(model, processor, device, dtype, lock, args):
                 answer = processor.batch_decode(
                     generated[:, trim:], skip_special_tokens=True
                 )[0].strip()
-                print(f"[cellscope-hf] {time.time() - started:.2f}s: {answer[:160]!r}")
+                print(f"[cellscope-hf] {time.time() - started:.2f}s: {answer[:160]!r}",
+                      flush=True)
                 self._json(
                     200,
                     {

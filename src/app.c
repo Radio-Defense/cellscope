@@ -95,10 +95,10 @@ static void visibility_set_candidate(VisibilityCandidate *dst, const MeterReadin
  * extracted reading votes in a frequency cluster; the winning cluster is the
  * one with the greatest confidence/quality weight. Within it, the best frame
  * (also by confidence/quality) is saved. No fixed 12-frame window is used. */
-static void visibility_commit_locked(App *app)
+static bool visibility_emit_locked(App *app)
 {
     VisibilitySession *v = &app->visibility;
-    if (!v->active) return;
+    if (!v->active) return false;
 
     int win = -1;
     double win_score = -1.0;
@@ -169,8 +169,47 @@ static void visibility_commit_locked(App *app)
         snprintf(app->reader.status, sizeof(app->reader.status),
                  "Recorded %s · %d/%d frames agree", eng, c->count,
                  v->readable_readings);
+        return true;
     }
+    return false;
+}
+
+static void visibility_commit_locked(App *app)
+{
+    VisibilitySession *v = &app->visibility;
+    if (!v->active) return;
+    if (!v->committed) visibility_emit_locked(app);
     visibility_reset_locked(app);
+}
+
+static void visibility_try_consensus_locked(App *app)
+{
+    VisibilitySession *v = &app->visibility;
+    if (!v->active || v->committed || v->readable_readings < 5) return;
+
+    int first = -1, second = -1;
+    double first_w = -1.0, second_w = -1.0;
+    for (int i = 0; i < v->cluster_count; i++) {
+        VisibilityCluster *c = &v->clusters[i];
+        if (c->count <= 0) continue;
+        if (c->weight > first_w) {
+            second = first;
+            second_w = first_w;
+            first = i;
+            first_w = c->weight;
+        } else if (c->weight > second_w) {
+            second = i;
+            second_w = c->weight;
+        }
+    }
+    if (first < 0) return;
+    VisibilityCluster *c = &v->clusters[first];
+    if (c->count < 4) return;
+    double total = 0.0;
+    for (int i = 0; i < v->cluster_count; i++) total += v->clusters[i].weight;
+    if (total <= 0.0 || c->weight / total < 0.65) return;
+    if (second >= 0 && first_w - second_w < 0.25 * first_w) return;
+    if (visibility_emit_locked(app)) v->committed = true;
 }
 
 static void visibility_update_locked(App *app, const MeterReading *r, const uint8_t *rgb,
@@ -229,6 +268,7 @@ static void visibility_update_locked(App *app, const MeterReading *r, const uint
         int64_t extracted = cs_epoch_ms();
         visibility_set_candidate(&c->best, r, quality, rgb, w, h, ts, extracted);
     }
+    visibility_try_consensus_locked(app);
 }
 
 void app_add_cell(App *app, const CellSample *sample)
@@ -368,6 +408,7 @@ void app_print_usage(void)
         "  --train-dry-run        Validate CSV + build parquet, do not train\n"
         "  --train-resume         Resume from the MiniMind checkpoint\n"
         "  --demo                 Synthetic phone + synthetic meter feed (no hardware)\n"
+        "  --autoplay             Start capture immediately (default: wait for play)\n"
         "  --demo-phone           Synthetic cell samples only\n"
         "  --image PATH           Use a still image instead of a webcam (testing)\n"
         "  --export-json PATH     Write both lists to JSON and exit (testing/automation)\n"
@@ -530,6 +571,8 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
             app->demo_phone = true;
         } else if (strcmp(a, "--demo-phone") == 0) {
             app->demo_phone = true;
+        } else if (strcmp(a, "--autoplay") == 0) {
+            app->autoplay = true;
         } else if (strcmp(a, "--no-modal") == 0) {
             app->no_modal = true;
         } else if (strcmp(a, "--no-camera") == 0) {
@@ -746,7 +789,9 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     app->win = win;
     app->ren = ren;
     app->started_ms = cs_now_ms();
-    app->paused = getenv("CELLSCOPE_START_PAUSED") != NULL;
+    app->paused = !app->autoplay;
+    if (getenv("CELLSCOPE_START_PAUSED")) app->paused = true;
+    if (getenv("CELLSCOPE_AUTOPLAY")) app->paused = false;
     char settings_err[512] = {0};
     if (settings_load(&app->settings, settings_err, sizeof(settings_err))) {
         if (!app->camera_cli) app->camera_index = app->settings.camera_index;
@@ -781,12 +826,18 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     if (!ui_init(&app->ui, ren, app->asset_dir, scale, err, err_cap)) return false;
 
     if (!app->demo && !app->image_mode && !app->no_camera) {
-        char cam_err[512];
-        if (camera_init(&app->cam, ren, app->camera_index, cam_err, sizeof(cam_err))) {
-            app->camera_ok = true;
+        if (!app->paused) {
+            char cam_err[512];
+            if (camera_init(&app->cam, ren, app->camera_index, cam_err,
+                            sizeof(cam_err))) {
+                app->camera_ok = true;
+            } else {
+                app->camera_ok = false;
+                cs_strlcpy(app->camera_error, cam_err, sizeof(app->camera_error));
+            }
         } else {
-            app->camera_ok = false;
-            cs_strlcpy(app->camera_error, cam_err, sizeof(app->camera_error));
+            cs_strlcpy(app->camera_error, "Press play to start the webcam.",
+                       sizeof(app->camera_error));
         }
         app->last_camera_retry_ms = cs_now_ms();
     }
@@ -840,6 +891,12 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
     app->modal_open = !app->no_modal && !app->demo && !app->image_mode;
     app->tracker = (MeterTracker){0};
     meter_tracker_init(&app->tracker);
+    if (app->paused) {
+        SDL_LockMutex(app->mu);
+        cs_strlcpy(app->reader.status, "Press play to begin capture",
+                   sizeof(app->reader.status));
+        SDL_UnlockMutex(app->mu);
+    }
 
     if (app->demo || app->demo_phone) {
         SDL_LockMutex(app->mu);
@@ -855,7 +912,7 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
         cs_strlcpy(app->device_label, "Pixel 8 · demo", sizeof(app->device_label));
         SDL_UnlockMutex(app->mu);
     }
-    if (app->demo) app_seed_demo(app);
+    if (app->demo && !app->paused) app_seed_demo(app);
     if (!app->paused) {
         SDL_LockMutex(app->mu);
         bool session_ok = session_begin_locked(app);
@@ -1034,7 +1091,7 @@ void app_update(App *app)
         }
     }
 
-    if (!app->demo && !app->image_mode && !app->no_camera) {
+    if (!app->paused && !app->demo && !app->image_mode && !app->no_camera) {
         if (!app->camera_permission_requested && now - app->started_ms > 800 &&
             app->cam.permission_pending) {
             app->camera_permission_requested = true;
@@ -1366,20 +1423,8 @@ static int SDLCALL cellscope_adb_thread(void *data)
         if (want) app->modal_checking = true;
         SDL_UnlockMutex(app->mu);
 
-        if (paused) {
-            SDL_Delay(120);
-            continue;
-        }
-
-        if (demo) {
-            if (now - app->last_demo_cell_ms >= 1000) {
-                demo_publish_cell(app);
-                app->last_demo_cell_ms = now;
-            }
-            SDL_Delay(80);
-            continue;
-        }
-
+        /* Process one-shot connection checks even while paused so the startup
+         * modal remains usable. Do not poll or store samples while paused. */
         if (want) {
             AdbStatus ns;
             adb_status_init(&ns);
@@ -1405,6 +1450,20 @@ static int SDLCALL cellscope_adb_thread(void *data)
             }
             last_state = ns.state;
             SDL_Delay(80);
+            continue;
+        }
+
+        if (demo) {
+            if (now - app->last_demo_cell_ms >= 1000) {
+                demo_publish_cell(app);
+                app->last_demo_cell_ms = now;
+            }
+            SDL_Delay(80);
+            continue;
+        }
+
+        if (paused) {
+            SDL_Delay(120);
             continue;
         }
 
@@ -1820,6 +1879,15 @@ void app_request_check(App *app)
 
 void app_toggle_pause(App *app)
 {
+    SDL_LockMutex(app->mu);
+    bool resuming = app->paused;
+    SDL_UnlockMutex(app->mu);
+    if (resuming) {
+        if (app->demo && app_cell_count(app) == 0) app_seed_demo(app);
+        if (!app->demo && !app->image_mode && !app->no_camera && !app->camera_ok)
+            app_retry_camera(app, false);
+    }
+
     SDL_LockMutex(app->mu);
     bool pause_now = !app->paused;
     bool session_ok = true;

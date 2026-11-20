@@ -72,6 +72,7 @@ typedef struct {
     int total_readings;
     int readable_readings;
     int cluster_count;
+    bool committed;
     VisibilityCluster clusters[VIS_CLUSTER_MAX];
 } VisibilitySession;
 
@@ -127,6 +128,7 @@ typedef struct App {
     TrainConfig train;
     bool demo;
     bool demo_phone;
+    bool autoplay;
     bool no_modal;
     bool image_mode;
     bool no_camera;
