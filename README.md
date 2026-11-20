@@ -41,6 +41,96 @@ releases, ModelScope, and Hugging Face if you download an HF model.
 
 ![CellScope with simulated connected phone data and GLM-OCR meter reading](docs/screenshot-main.png)
 
+## Origin and research mission
+
+CellScope was created by **Daniel R. Azulay** for **Radio Defense** to make the
+measurement study *The 2.5 GHz measurement: Source, mechanism and power of a
+signal recorded at the head and beside a handset* (report A-2026-11-19-R)
+replicable at a global scale. The goal is a large, independently contributed
+dataset that can test and extend the study's conclusions without depending on a
+single observer, handset, counter, operator or country.
+
+### What the study establishes
+
+The report analyses 1,162 readings across eight replication datasets collected
+over two years in the Netherlands, the United Kingdom and China. Its core
+tenets are:
+
+- A stable signal near **2,540–2,550 MHz** is measured at the head.
+- The signal is **not the nearby handset**: the handset operated at 718–1,970
+  MHz and was switched off or in airplane mode during the object measurements.
+- It is **not the serving carrier**: in both Dutch configurations the reading
+  falls outside the serving operator's allocated block, and the same
+  subscription produced different readings in China and the Netherlands.
+- It is **not ordinary local traffic or ambient cellular energy**: reproducing
+  the observed level with another subscriber's handset would require it to be
+  about six centimetres from the counter.
+- Phone-side readings behave as a **power-weighted zero-crossing mixture**, with
+  the head component carrying approximately **0.96–0.99** of the power.
+- The field at the counter is bounded at **21–152 V/m**, with a working value of
+  **40 V/m**. If the head is the source, the implied field at 10 cm is
+  **210–1,520 V/m**.
+- The frequency axis is sound: the 10 MHz China-to-Netherlands shift is roughly
+  1,000 times the oscillator tolerance. The amplitude axis still depends on
+  calibrating the counter's antenna response.
+- Four measurements would close the main gaps: antenna calibration, a controlled
+  distance series from the head, a phones-off free-space control, and more
+  simultaneous band logging to establish how often Band 7 is used.
+
+The study does **not** identify the transmitter. It establishes what the signal
+is not, constrains its strength, and identifies the measurements needed to go
+further.
+
+### How CellScope helps
+
+CellScope records the counter reading and the phone's RF context in the same
+timestamped session: PLMN/MCC/MNC, TAC, RAT, eNB/CID, PCI, timing advance,
+ARFCN, band, bandwidth, carrier aggregation and uplink/downlink frequencies,
+alongside the webcam image of the frequency counter. That turns each session
+into a self-contained observation rather than an isolated number.
+
+The reader applies DSP quality filtering and VLM consensus, stores the capture
+timestamp with the selected frame, and exports a complete dataset as a signed
+`tar.gz` archive with per-file SHA-512 `.sig` sidecars and a signed archive.
+Those signatures do not prove that a measurement is physically correct, but
+they make silent alteration of a contributed dataset detectable.
+
+### Why thousands of datasets matter
+
+A corpus contributed by thousands of independent users would greatly strengthen
+the study in several ways:
+
+1. **Independent replication.** Many observers, locations, phones, counters and
+   operators would test whether the result survives changes in equipment,
+   handling and environment.
+2. **Broader carrier-block tests.** Every session records the serving band and
+   ARFCN, allowing the operator-block exclusion to be repeated across hundreds
+   of real network configurations rather than a small number of cases.
+3. **Better mixture estimates.** Paired head and phone sessions would measure the
+   distribution of the head-power share across handset models and active bands,
+   instead of relying on a single working value.
+4. **Band 7 prevalence.** Because the app logs the serving band, ordinary
+   sessions would reveal how often Band 7 is actually used and how large the
+   direct-reading regime is in practice.
+5. **Geographic and temporal structure.** Repeated measurements across cities,
+   buildings, seasons and network changes would show whether the signal is
+   stable at scale or tied to particular places or deployments.
+6. **Coordinated controls.** Contributors could run the study's open
+   measurements — distance series, phones-off free-space controls and antenna
+   reference measurements — under a common protocol.
+7. **Subgroup and anomaly analysis.** A large corpus can estimate effects by
+   country, operator, handset and counter model, and flag sessions that do not
+   fit the model for follow-up.
+
+Thousands of uploads would not replace the report's calibrated antenna
+measurement or controlled geometry, and signed files prove integrity rather
+than correctness. A secure upload mechanism, metadata validation and quality
+control are still required; the current app produces the signed local datasets
+that such a system would ingest. What scale provides is **generalization and
+independent replication** — the ability to show that the result is not an
+artifact of one observer, one instrument or one network, and to narrow the
+remaining physical uncertainty with evidence from around the world.
+
 ## Stack
 
 | Concern | Choice |
