@@ -110,8 +110,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Use a maximized normal window rather than native fullscreen so the
+     * macOS/Windows/Linux title bar remains usable. */
     SDL_Window *win = SDL_CreateWindow("CellScope — Phone Cell + Meter Reader", 1440, 900,
-                                       SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE |
+                                       SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE |
                                            SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!win) {
         fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());

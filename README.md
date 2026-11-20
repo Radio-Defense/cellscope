@@ -7,18 +7,19 @@ state and a webcam at the same time.
   TAC, eNB/CID, PCI, timing advance, NR/LTE ARFCN, band, bandwidth, CA,
   downlink/uplink centre frequencies) plus a Wi-Fi column of anonymized SSIDs
   and their RSSI in dBm.
-- **Top left:** preview from the webcam attached to the local machine (never
-  the Android phone), with a meter alignment guide. While a device screen is
-  visible, a live card shows the reading extracted from every processed frame.
-- **Top right:** consensus-result reader. It shows nothing while a screen is
-  being collected, then displays the selected most-probable extraction for
-  **3 seconds**. The value is converted to Hz, and the exact best frame is saved.
-- **Bottom right:** timestamped frequency readings, each with the filename of
-  its saved screenshot.
+- **Right side:** full-height preview from the webcam attached to the local
+  machine (never the Android phone), with a meter alignment guide. While a
+  device screen is visible, a live card shows the reading extracted from every
+  processed frame. Reader status, confidence, raw answer, last-capture preview,
+  consensus result, and setup/folder controls are overlaid in this pane; there
+  is no separate meter-reader pane.
+- **Left side:** the cell-samples list stacked directly above the frequency
+  readings list. The readings table contains timestamp, Hz value, and saved
+  screenshot filename.
 - **Top centre:** a large play/pause control. CellScope starts paused: the
   webcam, ADB polling, VLM extraction, dataset session and table stay idle until
-  you press play. The window opens fullscreen by default (1440×900 logical
-  layout, letterboxed on other aspect ratios).
+  you press play. The window opens maximized with its normal title bar visible;
+  the UI uses a 1440×900 logical layout, letterboxed on other aspect ratios.
 - **On launch:** a step-by-step modal explains how to connect the phone over
   ADB. It only disappears when a device is authorized; failures show concrete
   fixes.
@@ -329,7 +330,7 @@ readable extraction is temporarily retained in memory with its webcam capture
 timestamp. During the event:
 
 - the **left-top live card** updates with every extracted reading;
-- the **right-top pane stays blank**, showing `—` and “collecting”;
+- the webcam reader overlay stays blank, showing “collecting”;
 - every retained frame votes in a frequency cluster, weighted by VLM
   confidence and frame quality;
 - the cluster with the greatest aggregate weight wins; within it, the
@@ -339,7 +340,7 @@ timestamp. During the event:
   the bottom-right table **immediately**, without waiting for pause or screen
   loss. It contains the frame filename and the epoch timestamp when that webcam
   frame appeared;
-- the right-top pane displays the winning value for **3 seconds**, then clears;
+- the webcam overlay displays the winning value for **3 seconds**, then clears;
   capture continues until the screen leaves, but that visibility event is not
   recorded twice.
 

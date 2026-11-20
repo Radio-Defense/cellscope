@@ -28,7 +28,6 @@ typedef struct {
     UiRect content;
     UiRect camera;
     UiRect cells;
-    UiRect reader;
     UiRect meters;
     UiRect footer;
 } Layout;
@@ -79,15 +78,13 @@ static void layout(App *app, Layout *l)
     l->footer = ui_rect(0, (float)h - 28, (float)w, 28);
     float y = 112 + app->ui_banner_h;
     float avail_h = (float)h - y - 28 - pad;
-    float left_w = ((float)w - 2 * pad - gap) * 0.57f;
+    float left_w = ((float)w - 2 * pad - gap) * 0.43f;
     float right_w = (float)w - 2 * pad - gap - left_w;
-    float top_h = avail_h * 0.53f;
-    float bottom_h = avail_h - top_h - gap;
+    float half_h = (avail_h - gap) * 0.5f;
     l->content = ui_rect(pad, y, (float)w - 2 * pad, avail_h);
-    l->camera = ui_rect(pad, y, left_w, top_h);
-    l->cells = ui_rect(pad, y + top_h + gap, left_w, bottom_h);
-    l->reader = ui_rect(pad + left_w + gap, y, right_w, top_h);
-    l->meters = ui_rect(pad + left_w + gap, y + top_h + gap, right_w, bottom_h);
+    l->cells = ui_rect(pad, y, left_w, half_h);
+    l->meters = ui_rect(pad, y + half_h + gap, left_w, avail_h - half_h - gap);
+    l->camera = ui_rect(pad + left_w + gap, y, right_w, avail_h);
 }
 
 static void draw_dot(Ui *ui, float x, float y, UiColor c)
@@ -417,6 +414,31 @@ static void draw_demo_feed(App *app, UiRect preview)
     }
 }
 
+static void copy_reader_setup(App *app)
+{
+    SDL_SetClipboardText(
+        "Ollama VLM:\n"
+        "  ollama pull moondream && ollama serve\n"
+        "  cellscope --vlm ollama --vlm-model moondream\n\n"
+        "llama.cpp + SmolVLM-256M:\n"
+        "  llama-server -hf ggml-org/SmolVLM-256M-Instruct-GGUF --port 8080\n"
+        "  cellscope --vlm llama --vlm-url http://127.0.0.1:8080\n\n"
+        "Train your own meter reader:\n"
+        "  cellscope --train ./meter_dataset --train-out ./training\n"
+        "  python scripts/serve_minimind_vlm.py --minimind third_party/minimind-v "
+        "--save_dir ./training --weight cellscope_meter --port 8090\n"
+        "  cellscope --vlm llama --vlm-url http://127.0.0.1:8090\n");
+    app_notify(app, false, "Reader setup commands copied to the clipboard.");
+}
+
+static void open_capture_folder(App *app)
+{
+    const char *dir = app->session_dir[0] ? app->session_dir : app->capture_dir;
+    char url[CS_PATH_MAX + 16];
+    snprintf(url, sizeof(url), "file://%s", dir);
+    if (!SDL_OpenURL(url)) app_notify(app, true, "Could not open %s", dir);
+}
+
 static void draw_camera_panel(App *app, UiState *s, UiRect r)
 {
     Ui *ui = &app->ui;
@@ -426,14 +448,26 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
                         : app->image_mode ? "Test image"
                         : app->camera_ok ? app->cam.name
                                          : "Unavailable";
-    ui_text_ellipsis(ui, FONT_MEDIUM, r.x + 80, r.y + 13, 9.6f, UI_FAINT, r.w - 260, cname);
+    float hx = r.x + r.w - 10;
     if (app->camera_ok && app->cam.count > 1 && !app->demo && !app->image_mode) {
-        UiRect sw = ui_rect(r.x + r.w - 84, r.y + 8, 70, 24);
+        hx -= 70;
+        UiRect sw = ui_rect(hx, r.y + 8, 70, 24);
         if (ui_button(ui, sw, "Switch", BUTTON_QUIET, true)) {
             if (camera_switch(&app->cam)) app_notify(app, false, "Camera: %s", app->cam.name);
             else app_notify(app, true, "Camera switch failed: %s", app->cam.error);
         }
+        hx -= 8;
     }
+    hx -= 76;
+    UiRect folder_btn = ui_rect(hx, r.y + 8, 76, 24);
+    if (ui_button(ui, folder_btn, "Folder", BUTTON_QUIET, true)) open_capture_folder(app);
+    hx -= 8;
+    hx -= 88;
+    UiRect setup_btn = ui_rect(hx, r.y + 8, 88, 24);
+    if (ui_button(ui, setup_btn, "Setup", BUTTON_QUIET, true)) copy_reader_setup(app);
+    float name_w = hx - (r.x + 80) - 10;
+    if (name_w < 80) name_w = 80;
+    ui_text_ellipsis(ui, FONT_MEDIUM, r.x + 80, r.y + 13, 9.6f, UI_FAINT, name_w, cname);
 
     UiRect p = ui_rect(r.x + 10, r.y + 40, r.w - 20, r.h - 50);
     ui_round_rect(ui, p, 10, UI_COLOR(5, 8, 11, 255));
@@ -578,26 +612,93 @@ static void draw_camera_panel(App *app, UiState *s, UiRect r)
         }
     }
 
-    /* Reader status strip inside the preview. */
+    /* Last-capture thumbnail (formerly in the reader pane). */
+    if (!app->demo && (app->preview_tex || s->reader.capture_path[0])) {
+        float sw = CS_MIN(176.0f, p.w * 0.24f);
+        float sh = sw * 9.0f / 16.0f;
+        UiRect snap = ui_rect(p.x + p.w - sw - 12, p.y + 36, sw, sh);
+        ui_round_rect(ui, snap, 7, UI_COLOR(5, 9, 13, 225));
+        if (app->preview_tex) {
+            float iw = 1, ih = 1;
+            SDL_GetTextureSize(app->preview_tex, &iw, &ih);
+            float fit_w = snap.w, fit_h = fit_w * ih / iw;
+            if (fit_h > snap.h) {
+                fit_h = snap.h;
+                fit_w = fit_h * iw / ih;
+            }
+            SDL_FRect dst = {snap.x + (snap.w - fit_w) / 2,
+                             snap.y + (snap.h - fit_h) / 2, fit_w, fit_h};
+            SDL_RenderTexture(ui->ren, app->preview_tex, NULL, &dst);
+        }
+        ui_rect_outline(ui, snap, UI_BORDER, 1);
+        ui_text_font(ui, FONT_SEMIBOLD, snap.x + 6, snap.y + 5, 6.8f,
+                     UI_COLOR(220, 235, 245, 200), "LAST CAPTURE");
+    }
+
+    /* Consensus result is displayed in the webcam pane for three seconds. */
+    if (s->reader.visible && s->reader.hz > 0) {
+        float cw = CS_MIN(430.0f, p.w - 32);
+        UiRect br = ui_rect(p.x + (p.w - cw) / 2, p.y + 58, cw, 116);
+        ui_round_rect(ui, br, 10, UI_COLOR(4, 10, 13, 232));
+        ui_rect_outline(ui, br, UI_COLOR(55, 110, 95, 235), 1);
+        ui_text_font(ui, FONT_SEMIBOLD, br.x + 14, br.y + 9, 7.6f, UI_ACCENT,
+                     "CONSENSUS RESULT · 3 SECONDS");
+        char eng[64];
+        cs_format_eng((uint64_t)(s->reader.hz + 0.5), eng, sizeof(eng));
+        char *sp = strrchr(eng, ' ');
+        char unit[16] = "";
+        if (sp) {
+            cs_strlcpy(unit, sp + 1, sizeof(unit));
+            *sp = '\0';
+        }
+        float size = CS_MIN(31.0f, cw / 6.4f);
+        float nw = ui_text_width(ui, FONT_MONO, size, eng);
+        ui_text_font(ui, FONT_MONO, br.x + 14, br.y + 24, size, UI_ACCENT, eng);
+        ui_text_font(ui, FONT_MEDIUM, br.x + 20 + nw, br.y + 24 + size * 0.55f, 10.0f,
+                     UI_MUTED, unit);
+        char hz[64];
+        cs_format_hz((uint64_t)(s->reader.hz + 0.5), hz, sizeof(hz));
+        ui_text_font(ui, FONT_MONO, br.x + 14, br.y + 74, 10.0f, UI_MUTED, hz);
+        char conf[64];
+        snprintf(conf, sizeof(conf), "CONF %d%%",
+                 (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0));
+        ui_text_right(ui, FONT_MONO, br.x + br.w - 14, br.y + 78, 8.4f, UI_FAINT, conf);
+    }
+
+    /* Reader status, confidence, backend and raw answer live in the webcam
+     * pane now that the dedicated reader pane is gone. */
     if (!app->demo) {
-        UiRect st = ui_rect(p.x + 12, p.y + p.h - 40, CS_MIN(p.w - 24, 390), 28);
-        ui_round_rect(ui, st, 8, UI_COLOR(5, 9, 13, 215));
+        UiRect st = ui_rect(p.x + 12, p.y + p.h - 64,
+                            CS_MIN(p.w - 24, p.w * 0.58f), 52);
+        ui_round_rect(ui, st, 8, UI_COLOR(5, 9, 13, 222));
         UiColor sc = s->reader.error[0] ? UI_RED
                      : (s->reader.screen_visible || s->reader.visible) ? UI_ACCENT
                                                                        : UI_MUTED;
         draw_dot(ui, st.x + 12, st.y + 14, sc);
-        char status[160];
+        char status[180];
         cs_strlcpy(status, s->reader.status[0] ? s->reader.status : "Watching for a display…",
                    sizeof(status));
-        ui_text_ellipsis(ui, FONT_MEDIUM, st.x + 20, st.y + 8, 9.6f, UI_MUTED,
-                         st.w - 120, status);
+        ui_text_ellipsis(ui, FONT_MEDIUM, st.x + 20, st.y + 7, 9.4f, UI_MUTED,
+                         st.w - 128, status);
         char burst[64];
         if (s->reader.burst_count > 0)
             snprintf(burst, sizeof(burst), "%d/12 · Q%d%%", s->reader.burst_count,
                      (int)(s->reader.best_score * 100.0f));
         else
             cs_strlcpy(burst, "burst idle", sizeof(burst));
-        ui_text_right(ui, FONT_MONO, st.x + st.w - 10, st.y + 9, 8.2f, UI_FAINT, burst);
+        ui_text_right(ui, FONT_MONO, st.x + st.w - 10, st.y + 8, 8.0f, UI_FAINT, burst);
+
+        const char *detail = s->reader.error[0] ? s->reader.error
+                            : s->reader.raw[0] ? s->reader.raw
+                            : s->reader.detail[0] ? s->reader.detail
+                                                  : "";
+        char meta[300];
+        snprintf(meta, sizeof(meta), "CONF %d%% · %s%s%s",
+                 (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0),
+                 s->reader.backend[0] ? s->reader.backend : "reader off",
+                 detail[0] ? " · " : "", detail);
+        ui_text_ellipsis(ui, FONT_MONO, st.x + 20, st.y + 29, 7.8f,
+                         s->reader.error[0] ? UI_RED : UI_FAINT, st.w - 30, meta);
     }
 }
 
@@ -773,195 +874,6 @@ static void draw_cell_panel(App *app, UiState *s, UiRect r)
     }
     ui_line(ui, r.x + 12, r.y + 39.5f, r.x + r.w - 12, r.y + 39.5f, UI_BORDER_SOFT, 1);
     draw_cell_rows(app, s, ui_rect(r.x + 8, r.y + 44, r.w - 16, r.h - 50));
-}
-
-static void draw_reader_panel(App *app, UiState *s, UiRect r)
-{
-    Ui *ui = &app->ui;
-    ui_panel(ui, r, UI_PANEL);
-    ui_text_font(ui, FONT_SEMIBOLD, r.x + 16, r.y + 13, 9.2f, UI_MUTED, "METER READER");
-
-    char backend[96];
-    cs_strlcpy(backend, s->reader.backend[0] ? s->reader.backend : "Reader off",
-               sizeof(backend));
-    float bw = CS_MIN(186.0f, ui_text_width(ui, FONT_MEDIUM, 9.0f, backend) + 24);
-    UiRect bp = ui_rect(r.x + r.w - bw - 14, r.y + 8, bw, 20);
-    ui_round_rect(ui, bp, 10, UI_COLOR(22, 31, 41, 255));
-    draw_dot(ui, bp.x + 10, bp.y + 10, kind_color(s->reader.kind));
-    ui_text_ellipsis(ui, FONT_MEDIUM, bp.x + 18, bp.y + 4.5f, 9.0f, UI_MUTED, bp.w - 24,
-                     backend);
-
-    float snap_w = CS_MIN(225.0f, r.w * 0.39f);
-    float snap_h = snap_w * 9.0f / 16.0f;
-    UiRect snap = ui_rect(r.x + 16, r.y + 48, snap_w, snap_h);
-    ui_round_rect(ui, snap, 8, UI_COLOR(7, 11, 15, 255));
-    if (app->preview_tex) {
-        float iw = 1, ih = 1;
-        SDL_GetTextureSize(app->preview_tex, &iw, &ih);
-        float fit_w = snap.w, fit_h = fit_w * ih / iw;
-        if (fit_h > snap.h) {
-            fit_h = snap.h;
-            fit_w = fit_h * iw / ih;
-        }
-        SDL_FRect dst = {snap.x + (snap.w - fit_w) / 2, snap.y + (snap.h - fit_h) / 2, fit_w,
-                         fit_h};
-        SDL_RenderTexture(ui->ren, app->preview_tex, NULL, &dst);
-    } else if (app->demo) {
-        ui_round_rect(ui, ui_inset(snap, 7), 5, UI_COLOR(10, 16, 20, 255));
-        ui_text_font(ui, FONT_SEMIBOLD, snap.x + 14, snap.y + 20, 7.2f,
-                     UI_COLOR(120, 150, 160, 210), "LIVE DEMO");
-        char num[40];
-        snprintf(num, sizeof(num), "%.6f", vlm_demo_hz(cs_epoch_ms()) / 1e9);
-        ui_text_font(ui, FONT_MONO, snap.x + 14, snap.y + 48, 15.0f, UI_ACCENT, num);
-        ui_text_font(ui, FONT_MEDIUM, snap.x + snap.w - 42, snap.y + 52, 8.0f, UI_MUTED,
-                     "GHz");
-        ui_circle(ui, snap.x + snap.w - 16, snap.y + 20, 3.0f, UI_ACCENT);
-    } else {
-        ui_text_center(ui, FONT_UI, snap.x + snap.w / 2, snap.y + snap.h / 2 - 12, 9.5f,
-                       UI_FAINT, "No capture yet");
-        ui_text_center(ui, FONT_MONO, snap.x + snap.w / 2, snap.y + snap.h / 2 + 4, 8.5f,
-                       UI_COLOR(80, 97, 112, 255), "screenshot appears here");
-    }
-    ui_rect_outline(ui, snap, UI_BORDER, 1);
-    ui_text_font(ui, FONT_SEMIBOLD, snap.x + 7, snap.y + 6, 7.4f,
-                 UI_COLOR(220, 235, 245, 190), "LAST CAPTURE");
-
-    float x = snap.x + snap.w + 16;
-    float right = r.x + r.w - 16;
-    float width = right - x;
-
-    UiColor stat_col = s->reader.error[0] ? UI_RED
-                       : (s->reader.screen_visible || s->reader.visible) ? UI_ACCENT
-                                                                         : UI_FAINT;
-    char st[200];
-    cs_strlcpy(st, s->reader.status[0] ? s->reader.status : "Watching for a display…",
-               sizeof(st));
-    if (s->reader.burst_count > 0) {
-        size_t n = strlen(st);
-        snprintf(st + n, sizeof(st) - n, "  ·  burst %d/12 · best %d%%",
-                 s->reader.burst_count, (int)(s->reader.best_score * 100.0f));
-    }
-    ui_text_ellipsis(ui, FONT_SEMIBOLD, x, r.y + 48, 8.6f, stat_col, width, st);
-
-    if (s->reader.visible && s->reader.hz > 0) {
-        char eng[64];
-        cs_format_eng((uint64_t)(s->reader.hz + 0.5), eng, sizeof(eng));
-        char *sp = strrchr(eng, ' ');
-        char unit[16] = "";
-        if (sp) {
-            cs_strlcpy(unit, sp + 1, sizeof(unit));
-            *sp = '\0';
-        }
-        float size = CS_MIN(27.0f, width / 7.0f);
-        float nw = ui_text_width(ui, FONT_MONO, size, eng);
-        ui_text_font(ui, FONT_MONO, x, r.y + 64, size, UI_ACCENT, eng);
-        ui_text_font(ui, FONT_MEDIUM, x + nw + 6, r.y + 64 + size * 0.55f, 10.0f,
-                     UI_MUTED, unit);
-        char hz[64];
-        cs_format_hz((uint64_t)(s->reader.hz + 0.5), hz, sizeof(hz));
-        ui_text_font(ui, FONT_MONO, x, r.y + 100, 9.8f, UI_MUTED, hz);
-    } else {
-        ui_text_font(ui, FONT_MONO, x, r.y + 64, 27, UI_COLOR(60, 74, 88, 255), "—");
-        ui_text_font(ui, FONT_UI, x, r.y + 102, 9.8f, UI_FAINT,
-                     s->reader.screen_visible ? "Collecting frames — best not selected yet"
-                                              : "No readable display yet");
-    }
-
-    /* Confidence bar */
-    float cy = r.y + 120;
-    char conf[64];
-    int pct = (int)(CS_MAX(0.0, CS_MIN(1.0, s->reader.confidence)) * 100.0);
-    snprintf(conf, sizeof(conf), "CONF %d%%", pct);
-    ui_text_font(ui, FONT_MONO, x, cy, 8.2f, UI_FAINT, conf);
-    if (s->reader.stable > 0) {
-        char stable[32];
-        snprintf(stable, sizeof(stable), "stable ×%d", s->reader.stable);
-        ui_text_right(ui, FONT_MONO, right, cy, 8.2f, UI_FAINT, stable);
-    }
-    UiRect bar = ui_rect(x, cy + 12, width, 3);
-    ui_round_rect(ui, bar, 1.5f, UI_COLOR(30, 42, 54, 255));
-    ui_round_rect(ui, ui_rect(bar.x, bar.y, bar.w * (pct / 100.0f), bar.h), 1.5f,
-                  kind_color(s->reader.kind));
-
-    /* Raw model answer */
-    if (s->reader.raw[0]) {
-        char raw[180];
-        cs_strlcpy(raw, s->reader.raw, sizeof(raw));
-        ui_text_wrapped_max(ui, x, cy + 22, width, 8.6f, UI_FAINT, 1, 2, raw);
-    } else if (s->reader.error[0]) {
-        ui_text_wrapped_max(ui, x, cy + 22, width, 8.6f, UI_RED, 1, 2, s->reader.error);
-    }
-
-    /* Recent frequency history. */
-    int mn = app_meter_count(app);
-    if (mn >= 2) {
-        int take = mn < 28 ? mn : 28;
-        MeterSample vals[28];
-        for (int i = 0; i < take; i++) vals[i] = app_meter_at(app, mn - take + i);
-        uint64_t lo = vals[0].hz, hi = vals[0].hz;
-        for (int i = 1; i < take; i++) {
-            if (vals[i].hz < lo) lo = vals[i].hz;
-            if (vals[i].hz > hi) hi = vals[i].hz;
-        }
-        if (hi == lo) hi = lo + 1;
-        float gx = x, gy = r.y + 152, gw = width, gh = 92;
-        ui_text_font(ui, FONT_SEMIBOLD, gx, gy, 7.4f, UI_FAINT, "FREQUENCY HISTORY");
-        char delta[64];
-        snprintf(delta, sizeof(delta), "%+lld Hz", (long long)vals[take - 1].hz -
-                                                        (long long)vals[0].hz);
-        ui_text_right(ui, FONT_MONO, x + width, gy, 7.6f, UI_FAINT, delta);
-        float top = gy + 16, bottom = gy + gh;
-        for (int g = 0; g < 3; g++) {
-            float yy = top + (bottom - top) * g / 2.0f;
-            ui_line(ui, gx, yy, gx + gw, yy, UI_COLOR(30, 42, 54, 110), 1);
-        }
-        float prev_x = 0, prev_y = 0;
-        for (int i = 0; i < take; i++) {
-            float px = gx + gw * (float)i / (float)(take - 1);
-            float py = bottom - (bottom - top) * (float)(vals[i].hz - lo) /
-                                    (float)(hi - lo);
-            if (i > 0) ui_line(ui, prev_x, prev_y, px, py, UI_ACCENT_SOFT, 1.6f);
-            if (i > 0) ui_line(ui, prev_x, prev_y, px, py, UI_ACCENT, 1.0f);
-            prev_x = px;
-            prev_y = py;
-        }
-        ui_circle(ui, prev_x, prev_y, 2.4f, UI_ACCENT);
-    }
-
-    /* Backend detail / setup hint at the bottom. */
-    float by = r.y + r.h - 82;
-    if (s->runtime.error && s->runtime.error_text[0]) {
-        ui_text_wrapped_max(ui, r.x + 16, by, r.w - 32, 8.6f, UI_RED, 1, 2,
-                            s->runtime.error_text);
-    } else if (s->reader.detail[0]) {
-        ui_text_wrapped_max(ui, r.x + 16, by, r.w - 32, 8.6f,
-                            s->reader.is_vlm ? UI_FAINT : UI_AMBER, 1, 2,
-                            s->reader.detail);
-    }
-    float btn_y = r.y + r.h - 34;
-    UiRect setup = ui_rect(r.x + 16, btn_y, 92, 26);
-    UiRect folder = ui_rect(r.x + 116, btn_y, 92, 26);
-    if (ui_button(ui, setup, "Copy setup", BUTTON_QUIET, true)) {
-        SDL_SetClipboardText(
-            "Ollama VLM:\n"
-            "  ollama pull moondream && ollama serve\n"
-            "  cellscope --vlm ollama --vlm-model moondream\n\n"
-            "llama.cpp + SmolVLM-256M:\n"
-            "  llama-server -hf ggml-org/SmolVLM-256M-Instruct-GGUF --port 8080\n"
-            "  cellscope --vlm llama --vlm-url http://127.0.0.1:8080\n\n"
-            "Train your own meter reader:\n"
-            "  cellscope --train ./meter_dataset --train-out ./training\n"
-            "  python scripts/serve_minimind_vlm.py --minimind third_party/minimind-v "
-            "--save_dir ./training --weight cellscope_meter --port 8090\n"
-            "  cellscope --vlm llama --vlm-url http://127.0.0.1:8090\n");
-        app_notify(app, false, "Reader setup commands copied to the clipboard.");
-    }
-    if (ui_button(ui, folder, "Open folder", BUTTON_QUIET, true)) {
-        const char *dir = app->session_dir[0] ? app->session_dir : app->capture_dir;
-        char url[CS_PATH_MAX + 16];
-        snprintf(url, sizeof(url), "file://%s", dir);
-        if (!SDL_OpenURL(url)) app_notify(app, true, "Could not open %s", dir);
-    }
 }
 
 static const char *ui_shot_name(const MeterSample *m)
@@ -1266,7 +1178,6 @@ void app_draw(App *app)
     draw_runtime_banner(app, &s);
     draw_camera_panel(app, &s, l.camera);
     draw_cell_panel(app, &s, l.cells);
-    draw_reader_panel(app, &s, l.reader);
     draw_meter_panel(app, &s, l.meters);
     draw_footer(app, &s);
     ui->block_interactive = false;
