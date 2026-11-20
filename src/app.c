@@ -2441,6 +2441,12 @@ void app_toggle_pause(App *app)
     char session[CS_PATH_MAX];
     cs_strlcpy(session, app->session_dir, sizeof(session));
     SDL_UnlockMutex(app->mu);
+    if (pause_now) {
+        /* Release the camera so macOS turns off its mandatory camera-in-use
+         * privacy indicator. It is reopened on resume. */
+        camera_close(&app->cam);
+        app->camera_ok = false;
+    }
     app_log(app, pause_now ? "paused" : "resumed");
     if (pause_now) {
         app_notify(app, false, "Paused webcam and ADB. Dataset saved to %s", session);
