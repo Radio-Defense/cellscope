@@ -34,9 +34,15 @@ bool settings_init(AppSettings *s, char *err, size_t err_cap)
         cs_strlcpy(s->path, override, sizeof(s->path));
         return true;
     }
-    char cwd[CS_PATH_MAX];
-    if (getcwd(cwd, sizeof(cwd))) {
-        cs_path_join(s->path, sizeof(s->path), cwd, "settings.json");
+#ifdef CELLSCOPE_SOURCE_ROOT
+    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT)) {
+        cs_path_join(s->path, sizeof(s->path), CELLSCOPE_SOURCE_ROOT, "settings.json");
+        return true;
+    }
+#endif
+    const char *root = cs_project_root();
+    if (root && root[0] && strcmp(root, "/") != 0) {
+        cs_path_join(s->path, sizeof(s->path), root, "settings.json");
         return true;
     }
     char dir[CS_PATH_MAX];

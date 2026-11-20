@@ -344,8 +344,17 @@ void app_add_meter(App *app, const MeterSample *sample)
 
 void app_open_settings_modal(App *app)
 {
-    char cwd[CS_PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd))) cs_strlcpy(cwd, ".", sizeof(cwd));
+    char base[CS_PATH_MAX] = {0};
+#ifdef CELLSCOPE_SOURCE_ROOT
+    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT))
+        cs_strlcpy(base, CELLSCOPE_SOURCE_ROOT, sizeof(base));
+#endif
+    if (!base[0] && app->project_root[0] && strcmp(app->project_root, "/") != 0)
+        cs_strlcpy(base, app->project_root, sizeof(base));
+    else if (!base[0] && app->capture_dir[0])
+        cs_strlcpy(base, app->capture_dir, sizeof(base));
+    else if (!base[0] && !getcwd(base, sizeof(base)))
+        cs_strlcpy(base, ".", sizeof(base));
     SDL_LockMutex(app->mu);
     AppSettings *s = &app->settings;
     snprintf(app->settings_edit[0], CS_PATH_MAX, "%d", s->version);
@@ -355,7 +364,7 @@ void app_open_settings_modal(App *app)
     snprintf(app->settings_edit[4], CS_PATH_MAX, "%d", s->hf_port);
     cs_strlcpy(app->settings_edit[5], s->hf_device, CS_PATH_MAX);
     snprintf(app->settings_edit[6], CS_PATH_MAX, "%d", s->camera_index);
-    cs_path_join(app->settings_target, sizeof(app->settings_target), cwd, "settings.json");
+    cs_path_join(app->settings_target, sizeof(app->settings_target), base, "settings.json");
     app->settings_focus = 0;
     app->settings_error[0] = '\0';
     app->settings_modal_open = true;
@@ -2846,10 +2855,19 @@ void app_export_dataset(App *app)
     }
     if (!name[0]) cs_strlcpy(name, file_basename(dir), sizeof(name));
 
-    char cwd[CS_PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd))) cs_strlcpy(cwd, ".", sizeof(cwd));
+    char base[CS_PATH_MAX] = {0};
+#ifdef CELLSCOPE_SOURCE_ROOT
+    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT))
+        cs_strlcpy(base, CELLSCOPE_SOURCE_ROOT, sizeof(base));
+#endif
+    if (!base[0] && app->project_root[0] && strcmp(app->project_root, "/") != 0)
+        cs_strlcpy(base, app->project_root, sizeof(base));
+    else if (!base[0] && app->capture_dir[0])
+        cs_strlcpy(base, app->capture_dir, sizeof(base));
+    else if (!base[0] && !getcwd(base, sizeof(base)))
+        cs_strlcpy(base, ".", sizeof(base));
     char exports[CS_PATH_MAX];
-    cs_path_join(exports, sizeof(exports), cwd, "exports");
+    cs_path_join(exports, sizeof(exports), base, "exports");
     if (!cs_mkdirs(exports)) {
         app_notify(app, true, "Could not create %s", exports);
         return;
