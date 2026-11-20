@@ -897,8 +897,8 @@ static void readme_fixture_seed(App *app)
          "3489.6", true},
     };
     static const double meters[] = {
-        2550.8221, 2551.1045, 2551.2918,
-        2551.6409, 2551.8126, 2551.9963,
+        2526.1208, 2526.2471, 2526.3586,
+        2526.4412, 2526.5127, 2526.5744,
     };
 
     SDL_LockMutex(app->mu);
@@ -973,8 +973,8 @@ static void readme_fixture_seed(App *app)
     app->reader.display_until_ms = app->reader.visible ? now + 300000 : 0;
     app->reader.burst_count = 6;
     app->reader.best_score = 0.94f;
-    app->reader.frame_w = 1620;
-    app->reader.frame_h = 1080;
+    app->reader.frame_w = 1562;
+    app->reader.frame_h = 1198;
     app->reader.last_ok_ms = now;
     app->reader.attempts = 6;
     app->reader.accepted = 6;
@@ -982,16 +982,16 @@ static void readme_fixture_seed(App *app)
     app->reader.is_vlm = true;
     cs_strlcpy(app->reader.backend, "GLM-OCR", sizeof(app->reader.backend));
     cs_strlcpy(app->reader.detail, "zai-org/GLM-OCR · fixture", sizeof(app->reader.detail));
-    cs_strlcpy(app->reader.raw, "2551.9963MHz", sizeof(app->reader.raw));
-    cs_strlcpy(app->reader.live_raw, "2551.9963MHz", sizeof(app->reader.live_raw));
+    cs_strlcpy(app->reader.raw, "2526.5744MHz", sizeof(app->reader.raw));
+    cs_strlcpy(app->reader.live_raw, "2526.5744MHz", sizeof(app->reader.live_raw));
     if (app->readme_fixture_mode == 2)
-        cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz",
+        cs_strlcpy(app->reader.status, "Screen visible · live 2526.5744 MHz",
                    sizeof(app->reader.status));
     else if (app->readme_fixture_mode == 3)
         cs_strlcpy(app->reader.status, "Screen left · consensus recorded",
                    sizeof(app->reader.status));
     else
-        cs_strlcpy(app->reader.status, "Screen visible · live 2.5519963 GHz · 6 candidates",
+        cs_strlcpy(app->reader.status, "Screen visible · live 2526.5744 MHz · 6 candidates",
                    sizeof(app->reader.status));
     app->cell_follow = true;
     app->meter_follow = true;
@@ -2195,10 +2195,10 @@ static int SDLCALL cellscope_vlm_thread(void *data)
             app->reader.live_confidence = r.confidence;
             app->reader.live_ms = best_frame_ts;
             cs_strlcpy(app->reader.live_raw, r.raw, sizeof(app->reader.live_raw));
-            char eng[64];
-            cs_format_eng((uint64_t)(r.hz + 0.5), eng, sizeof(eng));
+            char mhz[64];
+            snprintf(mhz, sizeof(mhz), "%.4f MHz", r.hz / 1e6);
             snprintf(app->reader.status, sizeof(app->reader.status),
-                     "Screen visible · live %s · %d candidates", eng,
+                     "Screen visible · live %s · %d candidates", mhz,
                      app->visibility.frame_count);
         } else {
             app->reader.live_valid = false;
