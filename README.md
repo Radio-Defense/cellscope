@@ -2,12 +2,11 @@
 
 ## Origin and research mission
 
-CellScope was created by **Daniel R. Azulay** for **Radio Defense** to make the
-measurement study *The 2.5 GHz measurement: Source, mechanism and power of a
-signal recorded at the head and beside a handset* (report A-2026-11-19-R)
-replicable at a global scale. The goal is a large, independently contributed
-dataset that can test and extend the study's conclusions without depending on a
-single observer, handset, counter, operator or country.
+CellScope was created by **Daniel R. Azulay** for **Radio Defense** to make a
+recently written tentative measurement study replicable at a global scale. The
+goal is a large, independently contributed dataset that can test and extend the
+study's conclusions without depending on a single observer, handset, counter,
+operator or country.
 
 ### What the study establishes
 
