@@ -150,6 +150,7 @@ typedef struct App {
     char export_json_path[CS_PATH_MAX];
     int64_t screenshot_delay_ms;
     bool quit_after_screenshot;
+    bool export_now;
     int64_t run_ms;
 
     /* runtime */
@@ -235,11 +236,6 @@ typedef struct App {
     int64_t session_started_ms;
     uint64_t session_cell_start;
     uint64_t session_meter_start;
-    bool export_pending;
-    bool export_dialog_open;
-    int export_result;
-    char export_path[CS_PATH_MAX];
-    char export_default[CS_PATH_MAX];
 
     VlmConfig vlm;
     MeterTracker tracker;
@@ -287,7 +283,7 @@ void app_request_check(App *app);
 void app_retry_runtime(App *app);
 void app_toggle_pause(App *app);
 bool app_retry_camera(App *app, bool notify);
-void app_export_json(App *app);
+void app_export_dataset(App *app);
 void app_notify(App *app, bool error, const char *fmt, ...);
 void app_copy_diagnostics(App *app);
 void app_save_window_png(App *app, const char *path);

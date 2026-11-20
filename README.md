@@ -458,13 +458,14 @@ received signal strength, not the AP's configured transmit power.
 |---|---|
 | `R` | reconnect ADB |
 | `C` | cycle cameras |
-| `E` | export both lists as JSON |
+| `E` | export the current dataset archive |
 | `Space` | play/pause webcam + ADB |
 | `Esc` | dismiss the connection modal |
 
-**Export** opens the native save dialog with a `.json` filter and a default name
-such as `cellscope_<timestamp>.json`. The file contains both the `readings` and
-`cell_samples` arrays. Capture data defaults under `~/.cellscope/datasets/` (or
+**Export** signs every file in the current dataset with a SHA-512 `.sig` sidecar,
+archives the full dataset as `exports/<dataset-folder-name>.tar.gz`, signs that
+archive, and opens the `exports/` folder in the operating system's file browser.
+Capture data defaults under `~/.cellscope/datasets/` (or
 `<--capture-dir>/datasets/`).
 
 The top bar also has **Upload** and **Settings** buttons. **Settings** opens an
@@ -634,7 +635,7 @@ Source map:
 
 | Path | Role |
 |---|---|
-| `src/app.c` | lifecycle, threads, ADB/VLM workers, burst, JSON export, screenshots |
+| `src/app.c` | lifecycle, threads, ADB/VLM workers, burst, archive export, screenshots |
 | `src/settings.c` / `src/hfmodel.c` | settings.json and Hugging Face model download |
 | `src/app_ui.c` | layout, camera panel, lists, modal, reader UI |
 | `src/ui.c` / `src/fonts.c` | renderer, text cache, widgets, rounded shapes |
@@ -679,8 +680,10 @@ Headless JSON-export smoke test:
 python3 -m json.tool /tmp/cellscope-export.json >/dev/null
 ```
 
-`--export-json PATH` writes both lists directly and exits; the GUI **Export**
-button uses the native save dialog instead.
+`--export-json PATH` writes both lists directly and exits. The GUI **Export**
+button instead writes a per-file SHA-512 `.sig` beside every dataset file,
+creates `exports/<dataset-folder-name>.tar.gz`, writes its `.sig`, and opens
+the `exports/` folder in the OS file browser.
 
 Runtime bootstrap smoke test (uses a light package set and does not download
 models):

@@ -13,3 +13,4 @@ __pycache__/
 *.pyc
 docs/example.png
 settings.json
+exports/

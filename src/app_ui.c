@@ -249,7 +249,7 @@ static void draw_header(App *app, UiState *s)
     float x = w - 18;
     /* Export / Upload / Settings */
     UiRect export_r = ui_rect(x - 78, 18, 78, pill_h);
-    if (ui_button(ui, export_r, "Export", BUTTON_SECONDARY, true)) app_export_json(app);
+    if (ui_button(ui, export_r, "Export", BUTTON_SECONDARY, true)) app_export_dataset(app);
     x -= 78 + gap;
     UiRect upload_r = ui_rect(x - 70, 18, 70, pill_h);
     if (ui_button(ui, upload_r, "Upload", BUTTON_SECONDARY, true))

@@ -1,10 +1,18 @@
 #include "app.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef _WIN32
+#include <dirent.h>
+#include <sys/stat.h>
+#else
+#include <windows.h>
+#endif
 
 #ifdef _WIN32
 #include <direct.h>
@@ -13,11 +21,11 @@
 #include <unistd.h>
 #endif
 
+#include "proc.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "wifi.h"
 #include "camera_platform.h"
-#include <SDL3/SDL_dialog.h>
 
 static void app_log(App *app, const char *fmt, ...);
 static void app_export_json_to(App *app, const char *path);
@@ -632,6 +640,7 @@ void app_print_usage(void)
         "  --capture-dir PATH     root for datasets, screenshots, logs, and exports\n"
         "  --screenshot PATH      save a window screenshot and exit (testing)\n"
         "  --screenshot-delay MS  wait before the screenshot (default 2500)\n"
+        "  --export-now           export the current dataset and exit (testing)\n"
         "  --run-ms MS            exit after this many milliseconds\n"
         "  --help                 show this help\n\n"
         "By default the first run installs a private Python 3.11 + MiniMind runtime in\n"
@@ -838,6 +847,8 @@ AppArgsResult app_parse_args(App *app, int argc, char **argv, char *err, size_t 
                 return APP_ARGS_ERROR;
             }
             app->screenshot_delay_ms = v;
+        } else if (strcmp(a, "--export-now") == 0) {
+            app->export_now = true;
         } else if (strcmp(a, "--run-ms") == 0 && i + 1 < argc) {
             int v = 0;
             if (!parse_int(argv[++i], &v) || v < 0) {
@@ -1271,6 +1282,10 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
             app_notify(app, true, "Could not create a dataset folder under %s",
                        app->datasets_dir);
     }
+    if (app->export_now) {
+        app_export_dataset(app);
+        SDL_SetAtomicInt(&app->quit, 1);
+    }
     if (app->export_json_path[0]) {
         app_export_json_to(app, app->export_json_path);
         SDL_SetAtomicInt(&app->quit, 1);
@@ -1429,22 +1444,6 @@ void app_update(App *app)
 {
     if (app->readme_fixture) return;
     int64_t now = cs_now_ms();
-    bool export_pending = false;
-    int export_result = 0;
-    char export_path[CS_PATH_MAX] = {0};
-    SDL_LockMutex(app->mu);
-    if (app->export_pending) {
-        export_pending = true;
-        export_result = app->export_result;
-        cs_strlcpy(export_path, app->export_path, sizeof(export_path));
-        app->export_pending = false;
-        app->export_result = 0;
-    }
-    SDL_UnlockMutex(app->mu);
-    if (export_pending) {
-        if (export_result == 1) app_export_json_to(app, export_path);
-        else if (export_result == 2) app_notify(app, true, "Could not open the save dialog.");
-    }
 
     SDL_LockMutex(app->mu);
     if (app->reader.visible && app->reader.display_until_ms > 0 &&
@@ -2675,44 +2674,221 @@ static void app_export_json_to(App *app, const char *path)
     }
 }
 
-static void SDLCALL export_dialog_cb(void *userdata, const char * const *filelist,
-                                     int filter)
+static bool sha512_hex(const char *path, char *hex, size_t cap, char *err, size_t err_cap)
 {
-    (void)filter;
-    App *app = userdata;
-    SDL_LockMutex(app->mu);
-    app->export_dialog_open = false;
-    app->export_pending = true;
-    if (!filelist) {
-        app->export_result = 2;
-    } else if (!filelist[0]) {
-        app->export_result = 3;
-    } else {
-        app->export_result = 1;
-        cs_strlcpy(app->export_path, filelist[0], sizeof(app->export_path));
+    char tool[CS_PATH_MAX];
+    if (proc_find_in_path("shasum", tool, sizeof(tool))) {
+    } else if (!proc_find_in_path("sha512sum", tool, sizeof(tool)) &&
+               !proc_find_in_path("certutil", tool, sizeof(tool))) {
+        snprintf(err, err_cap, "No SHA-512 tool found (shasum, sha512sum, or certutil)");
+        return false;
     }
-    SDL_UnlockMutex(app->mu);
+    const char *argv[6];
+    int n = 0;
+    argv[n++] = tool;
+    char tool_name[CS_PATH_MAX];
+    cs_strlcpy(tool_name, file_basename(tool), sizeof(tool_name));
+    bool certutil = strcmp(tool_name, "certutil") == 0;
+    if (strcmp(tool_name, "shasum") == 0) {
+        argv[n++] = "-a";
+        argv[n++] = "512";
+    } else if (certutil) {
+        argv[n++] = "-hashfile";
+    }
+    argv[n++] = path;
+    if (certutil) argv[n++] = "SHA512";
+    argv[n] = NULL;
+
+    char out[8192] = {0};
+    int code = -1;
+    bool timed_out = false;
+    char perr[512] = {0};
+    if (!proc_run(argv, out, sizeof(out), 120000, &code, &timed_out, perr, sizeof(perr))) {
+        snprintf(err, err_cap, "SHA-512 command failed: %s", perr);
+        return false;
+    }
+    if (code != 0 || timed_out) {
+        snprintf(err, err_cap, "SHA-512 command exited %d: %.200s", code, out);
+        return false;
+    }
+    size_t run = 0;
+    for (const char *p = out; *p; p++) {
+        if (isxdigit((unsigned char)*p)) {
+            run++;
+        } else {
+            run = 0;
+        }
+        if (run == 128) {
+            const char *start = p - 127;
+            if (cap < 129) return false;
+            for (int i = 0; i < 128; i++) hex[i] = (char)tolower((unsigned char)start[i]);
+            hex[128] = '\0';
+            return true;
+        }
+    }
+    snprintf(err, err_cap, "Could not parse SHA-512 output: %.200s", out);
+    return false;
 }
 
-void app_export_json(App *app)
+static bool write_sig_file(const char *file, const char *hex, char *err, size_t err_cap)
 {
+    char sig[CS_PATH_MAX];
+    snprintf(sig, sizeof(sig), "%s.sig", file);
+    FILE *f = fopen(sig, "wb");
+    if (!f) {
+        snprintf(err, err_cap, "Could not write %s", sig);
+        return false;
+    }
+    fprintf(f, "%s  %s\n", hex, file_basename(file));
+    bool ok = fclose(f) == 0;
+    if (!ok) snprintf(err, err_cap, "Could not finish %s", sig);
+    return ok;
+}
+
+static bool hash_and_sig(const char *path, int *count, char *err, size_t err_cap)
+{
+    char hex[129];
+    if (!sha512_hex(path, hex, sizeof(hex), err, err_cap)) return false;
+    if (!write_sig_file(path, hex, err, err_cap)) return false;
+    (*count)++;
+    return true;
+}
+
+static bool hash_dataset_files(const char *dir, int *count, char *err, size_t err_cap)
+{
+    *count = 0;
+#ifdef _WIN32
+    char pattern[CS_PATH_MAX];
+    snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        snprintf(err, err_cap, "Could not enumerate %s", dir);
+        return false;
+    }
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (cs_ends_with(fd.cFileName, ".sig")) continue;
+        char path[CS_PATH_MAX];
+        cs_path_join(path, sizeof(path), dir, fd.cFileName);
+        if (!hash_and_sig(path, count, err, err_cap)) {
+            FindClose(h);
+            return false;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return true;
+#else
+    DIR *d = opendir(dir);
+    if (!d) {
+        snprintf(err, err_cap, "Could not open %s", dir);
+        return false;
+    }
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        if (cs_ends_with(de->d_name, ".sig")) continue;
+        char path[CS_PATH_MAX];
+        cs_path_join(path, sizeof(path), dir, de->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (!hash_and_sig(path, count, err, err_cap)) {
+            closedir(d);
+            return false;
+        }
+    }
+    closedir(d);
+    return true;
+#endif
+}
+
+static bool run_tar(const char *archive, const char *parent, const char *name, char *err,
+                    size_t err_cap)
+{
+    char tar[CS_PATH_MAX];
+    if (!proc_find_in_path("tar", tar, sizeof(tar))) {
+        snprintf(err, err_cap, "tar was not found in PATH");
+        return false;
+    }
+    const char *argv[] = {tar, "-czf", archive, "-C", parent, name, NULL};
+    char out[4096] = {0};
+    int code = -1;
+    bool timed_out = false;
+    char perr[512] = {0};
+    if (!proc_run(argv, out, sizeof(out), 300000, &code, &timed_out, perr, sizeof(perr))) {
+        snprintf(err, err_cap, "tar failed: %s", perr);
+        return false;
+    }
+    if (code != 0 || timed_out) {
+        snprintf(err, err_cap, "tar exited %d: %.300s", code, out);
+        return false;
+    }
+    return true;
+}
+
+void app_export_dataset(App *app)
+{
+    char dir[CS_PATH_MAX] = {0};
+    char name[128] = {0};
     SDL_LockMutex(app->mu);
-    bool open = app->export_dialog_open;
+    if (app->session_active) session_write_locked(app);
+    cs_strlcpy(dir, app->session_dir, sizeof(dir));
+    cs_strlcpy(name, app->session_name, sizeof(name));
+    bool write_failed = app->session_write_failed;
     SDL_UnlockMutex(app->mu);
-    if (open) {
-        app_notify(app, false, "The export dialog is already open.");
+    if (!dir[0] || !cs_is_dir(dir)) {
+        app_notify(app, true, "No current dataset to export. Start a capture first.");
         return;
     }
-    char stamp[32];
-    cs_format_date_stamp(cs_epoch_ms(), stamp, sizeof(stamp));
-    SDL_LockMutex(app->mu);
-    snprintf(app->export_default, sizeof(app->export_default), "%s/cellscope_%s.json",
-             app->capture_dir, stamp);
-    app->export_dialog_open = true;
-    SDL_UnlockMutex(app->mu);
-    static const SDL_DialogFileFilter filter = {"JSON file", "json"};
-    SDL_ShowSaveFileDialog(export_dialog_cb, app, app->win, &filter, 1,
-                           app->export_default);
+    if (write_failed) {
+        app_notify(app, true, "The current dataset JSON could not be finalized; export aborted.");
+        return;
+    }
+    if (!name[0]) cs_strlcpy(name, file_basename(dir), sizeof(name));
+
+    char cwd[CS_PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) cs_strlcpy(cwd, ".", sizeof(cwd));
+    char exports[CS_PATH_MAX];
+    cs_path_join(exports, sizeof(exports), cwd, "exports");
+    if (!cs_mkdirs(exports)) {
+        app_notify(app, true, "Could not create %s", exports);
+        return;
+    }
+
+    char err[512] = {0};
+    int hashed = 0;
+    if (!hash_dataset_files(dir, &hashed, err, sizeof(err))) {
+        app_notify(app, true, "Could not checksum the dataset: %s", err);
+        return;
+    }
+
+    char parent[CS_PATH_MAX];
+    cs_strlcpy(parent, dir, sizeof(parent));
+    char *slash = strrchr(parent, '/');
+    if (slash && slash != parent) *slash = '\0';
+    else cs_strlcpy(parent, ".", sizeof(parent));
+
+    char archive[CS_PATH_MAX];
+    snprintf(archive, sizeof(archive), "%s/%s.tar.gz", exports, name);
+    if (!run_tar(archive, parent, file_basename(dir), err, sizeof(err))) {
+        app_notify(app, true, "Could not archive the dataset: %s", err);
+        return;
+    }
+    char hex[129];
+    if (!sha512_hex(archive, hex, sizeof(hex), err, sizeof(err)) ||
+        !write_sig_file(archive, hex, err, sizeof(err))) {
+        app_notify(app, true, "Could not sign the export: %s", err);
+        return;
+    }
+
+    if (!getenv("CELLSCOPE_EXPORT_NO_OPEN")) {
+        char url[CS_PATH_MAX + 16];
+        snprintf(url, sizeof(url), "file://%s", exports);
+        SDL_OpenURL(url);
+    }
+    app_log(app, "exported dataset %s (%d file signatures): %s", name, hashed, archive);
+    app_notify(app, false, "Exported %d signed files and %s.tar.gz to %s", hashed, name,
+               exports);
 }
 
 void app_save_window_png(App *app, const char *path)
@@ -2822,7 +2998,7 @@ void app_handle_event(App *app, const SDL_Event *e)
                 }
                 break;
             case SDLK_E:
-                app_export_json(app);
+                app_export_dataset(app);
                 break;
             case SDLK_SPACE:
                 if (!app->modal_open && !app->remove_meter_open) app_toggle_pause(app);
