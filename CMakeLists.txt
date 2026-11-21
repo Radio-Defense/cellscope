@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(CellScope VERSION 0.1.0 LANGUAGES C)
+project(CellScope VERSION 0.1.1 LANGUAGES C)
 
 if(APPLE)
   enable_language(OBJC)
