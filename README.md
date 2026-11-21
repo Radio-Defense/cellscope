@@ -128,13 +128,17 @@ state and a webcam at the same time.
   and MiniMind assets, then starts the local reader bridge in the background.
   A downloaded Hugging Face model recorded in `settings.json` takes precedence.
 
-Camera frames and readings stay local. Webcam frames are converted to RGB24,
-scaled to at most 1024 px wide with preserved aspect ratio, PNG-encoded, and sent
-as a data URL. The HF bridge decodes them as RGB and preserves the processor's
-the processor's image inputs and attention mask; the GLM-OCR path uses its own
-chat template and `Text Recognition:` prompt. No
-telemetry, no cloud inference, and no images are uploaded. The one-time runtime/model downloads come from uv's GitHub
-releases, ModelScope, and Hugging Face if you download an HF model.
+Camera frames and readings are processed locally. Webcam frames are converted to
+RGB24, scaled to at most 1024 px wide with preserved aspect ratio, PNG-encoded,
+and sent as a data URL to the local bridge. The HF bridge decodes them as RGB
+and preserves the processor's image inputs and attention mask; the GLM-OCR path
+uses its own chat template and `Text Recognition:` prompt. There is no telemetry
+and no cloud inference. Images are not uploaded during capture or analysis.
+
+In the future, users will be able to upload their generated datasets once a
+secure, redundant storage mechanism is available. Uploading is not implemented
+yet. The one-time runtime/model downloads come from uv's GitHub releases,
+ModelScope, and Hugging Face if you download an HF model.
 
 
 ## Stack
