@@ -18,7 +18,7 @@ on:
           - Windows
         default: all
       version:
-        description: "Release tag (e.g. v0.1.1). Leave empty for auto-generated tag."
+        description: "Release tag (e.g. v0.2.0). Leave empty for auto-generated tag."
         required: false
         type: string
         default: ""
@@ -223,8 +223,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ github.event.inputs.version || format('v0.1.1-build.{0}', github.run_number) }}
-          name: CellScope ${{ github.event.inputs.version || 'v0.1.1' }}
+          tag_name: ${{ github.event.inputs.version || format('v0.2.0-build.{0}', github.run_number) }}
+          name: CellScope ${{ github.event.inputs.version || 'v0.2.0' }}
           body_path: release-notes.md
           files: dist/*
           fail_on_unmatched_files: true
