@@ -18,7 +18,7 @@ on:
           - Windows
         default: all
       version:
-        description: "Release tag (e.g. v0.1.1). Leave empty for auto-generated tag."
+        description: "Release tag (e.g. v0.1.2). Leave empty for auto-generated tag."
         required: false
         type: string
         default: ""
@@ -36,7 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      built_at: ${{ steps.timestamp.outputs.built_at }}
     steps:
+      - name: Set build timestamp
+        id: timestamp
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Set matrix
         id: set-matrix
         run: |
@@ -176,7 +181,7 @@ jobs:
   release:
     name: Publish release
     if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -191,15 +196,11 @@ jobs:
       - name: List release files
         run: find dist -maxdepth 2 -type f -print
 
-      - name: Set build timestamp
-        id: build_time
-        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
       - name: Compose release notes
         env:
           PUBLISH: ${{ inputs.publish }}
           OS_INPUT: ${{ inputs.os || 'all' }}
-          BUILT_AT: ${{ steps.build_time.outputs.value }}
+          BUILT_AT: ${{ needs.prepare.outputs.built_at }}
         run: |
           if [ "$PUBLISH" = "true" ]; then
             status="Production ready."
@@ -222,8 +223,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ github.event.inputs.version || format('v0.1.1-build.{0}', github.run_number) }}
-          name: CellScope ${{ github.event.inputs.version || 'v0.1.1' }}
+          tag_name: ${{ github.event.inputs.version || format('v0.1.2-build.{0}', github.run_number) }}
+          name: CellScope ${{ github.event.inputs.version || 'v0.1.2' }}
           body_path: release-notes.md
           files: dist/*
           fail_on_unmatched_files: true
