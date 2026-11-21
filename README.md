@@ -1,5 +1,7 @@
 # CellScope
 
+**Current version:** `0.1.0`
+
 ## Origin and research mission
 
 CellScope was created by **Daniel R. Azulay** for **Radio Defense** to make a
@@ -156,6 +158,22 @@ ModelScope, and Hugging Face if you download an HF model.
 | Local bridge | MiniMind-V or Hugging Face Transformers model behind an OpenAI-compatible HTTP endpoint |
 
 ## Build
+
+### Production releases
+
+The release helper builds through GitHub Actions for one or all platforms:
+
+```bash
+./scripts/release.sh --os All
+./scripts/release.sh --os macOS --bump patch
+./scripts/release.sh --os Linux --version 0.2.0
+```
+
+It updates the version in `CMakeLists.txt` and this README, commits and pushes
+the change, syncs the `Radio-Defense/cellscope` fork from the upstream
+repository, dispatches `cmake-multi-platform.yml`, and opens the run in the
+browser. It requires a clean `main` branch and an authenticated GitHub CLI
+account with owner access to `Radio-Defense`.
 
 ### macOS
 
