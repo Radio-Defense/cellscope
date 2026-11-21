@@ -1,6 +1,6 @@
 # CellScope
 
-**Current version:** `0.2.0`
+**Current version:** `0.2.1`
 
 ## Origin and research mission
 
@@ -621,8 +621,9 @@ received signal strength, not the AP's configured transmit power.
 | `Esc` | dismiss the connection modal |
 
 **Export** signs every file in the current dataset with a SHA-512 `.sig` sidecar,
-archives the full dataset as `exports/<dataset-folder-name>.tar.gz`, signs that
-archive, and opens the `exports/` folder in the operating system's file browser.
+archives the full dataset as `exports/dataset-<dataset-folder-name>.tar.gz`,
+signs that archive, and opens the `exports/` folder in the operating system's
+file browser.
 Capture data defaults under `~/.cellscope/datasets/` (or
 `<--capture-dir>/datasets/`).
 
@@ -856,8 +857,8 @@ python3 -m json.tool /tmp/cellscope-export.json >/dev/null
 
 `--export-json PATH` writes both lists directly and exits. The GUI **Export**
 button instead writes a per-file SHA-512 `.sig` beside every dataset file,
-creates `exports/<dataset-folder-name>.tar.gz`, writes its `.sig`, and opens
-the `exports/` folder in the OS file browser.
+creates `exports/dataset-<dataset-folder-name>.tar.gz`, writes its `.sig`, and
+opens the `exports/` folder in the OS file browser.
 
 Runtime bootstrap smoke test (uses a light package set and does not download
 models):

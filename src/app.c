@@ -3061,7 +3061,7 @@ void app_export_dataset(App *app)
     else cs_strlcpy(parent, ".", sizeof(parent));
 
     char archive[CS_PATH_MAX];
-    snprintf(archive, sizeof(archive), "%s/%s.tar.gz", exports, name);
+    snprintf(archive, sizeof(archive), "%s/dataset-%s.tar.gz", exports, name);
     if (!run_tar(archive, parent, file_basename(dir), err, sizeof(err))) {
         app_notify(app, true, "Could not archive the dataset: %s", err);
         return;
@@ -3079,8 +3079,8 @@ void app_export_dataset(App *app)
         SDL_OpenURL(url);
     }
     app_log(app, "exported dataset %s (%d file signatures): %s", name, hashed, archive);
-    app_notify(app, false, "Exported %d signed files and %s.tar.gz to %s", hashed, name,
-               exports);
+    app_notify(app, false, "Exported %d signed files and dataset-%s.tar.gz to %s", hashed,
+               name, exports);
 }
 
 void app_save_window_png(App *app, const char *path)
