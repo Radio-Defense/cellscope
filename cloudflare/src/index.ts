@@ -283,7 +283,7 @@ async function createUpload(request: Request, env: Env): Promise<Response> {
   if (!await consumeNonce(env.DB, body.device_id, body.nonce))
     return bad("nonce already used", 409);
 
-  const archiveKey = `datasets/${body.device_id}/${body.upload_id}/${body.archive_name}`;
+  const archiveKey = body.archive_name;
   const sigKey = `${archiveKey}.sig`;
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare(

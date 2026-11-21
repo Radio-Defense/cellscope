@@ -88,6 +88,11 @@ npx wrangler deploy
 The resulting `https://cellscope-upload.<subdomain>.workers.dev` is the API URL
 to put in CellScope’s Settings.
 
+Uploaded objects are written at the bucket root as
+`dataset-<name>.tar.gz` and `dataset-<name>.tar.gz.sig`. The B2 application key
+must allow that prefix; if it is restricted to `datasets/`, update the key or
+the restriction.
+
 ## 5. Enrollment access
 
 Enrollment is open by default: any valid email can enroll, but the device still
