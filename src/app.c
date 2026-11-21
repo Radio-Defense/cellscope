@@ -355,17 +355,6 @@ void app_add_meter(App *app, const MeterSample *sample)
 
 void app_open_settings_modal(App *app)
 {
-    char base[CS_PATH_MAX] = {0};
-#ifdef CELLSCOPE_SOURCE_ROOT
-    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT))
-        cs_strlcpy(base, CELLSCOPE_SOURCE_ROOT, sizeof(base));
-#endif
-    if (!base[0] && app->project_root[0] && strcmp(app->project_root, "/") != 0)
-        cs_strlcpy(base, app->project_root, sizeof(base));
-    else if (!base[0] && app->capture_dir[0])
-        cs_strlcpy(base, app->capture_dir, sizeof(base));
-    else if (!base[0] && !getcwd(base, sizeof(base)))
-        cs_strlcpy(base, ".", sizeof(base));
     SDL_LockMutex(app->mu);
     AppSettings *s = &app->settings;
     snprintf(app->settings_edit[0], CS_PATH_MAX, "%d", s->version);
@@ -377,7 +366,7 @@ void app_open_settings_modal(App *app)
     snprintf(app->settings_edit[6], CS_PATH_MAX, "%d", s->camera_index);
     cs_strlcpy(app->settings_edit[7], s->upload_api_url, CS_PATH_MAX);
     cs_strlcpy(app->settings_edit[8], s->upload_email, CS_PATH_MAX);
-    cs_path_join(app->settings_target, sizeof(app->settings_target), base, "settings.json");
+    cs_strlcpy(app->settings_target, s->path, sizeof(app->settings_target));
     app->settings_focus = 0;
     app->settings_error[0] = '\0';
     app->settings_modal_open = true;
@@ -3086,16 +3075,15 @@ void app_export_dataset(App *app)
     if (!name[0]) cs_strlcpy(name, file_basename(dir), sizeof(name));
 
     char base[CS_PATH_MAX] = {0};
-#ifdef CELLSCOPE_SOURCE_ROOT
-    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT))
-        cs_strlcpy(base, CELLSCOPE_SOURCE_ROOT, sizeof(base));
-#endif
-    if (!base[0] && app->project_root[0] && strcmp(app->project_root, "/") != 0)
-        cs_strlcpy(base, app->project_root, sizeof(base));
-    else if (!base[0] && app->capture_dir[0])
+    if (app->capture_dir[0])
         cs_strlcpy(base, app->capture_dir, sizeof(base));
-    else if (!base[0] && !getcwd(base, sizeof(base)))
-        cs_strlcpy(base, ".", sizeof(base));
+    else {
+        char dir[CS_PATH_MAX];
+        if (cs_app_data_dir(dir, sizeof(dir)))
+            cs_strlcpy(base, dir, sizeof(base));
+        else if (!getcwd(base, sizeof(base)))
+            cs_strlcpy(base, ".", sizeof(base));
+    }
     char exports[CS_PATH_MAX];
     cs_path_join(exports, sizeof(exports), base, "exports");
     if (!cs_mkdirs(exports)) {

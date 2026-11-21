@@ -26,6 +26,31 @@ void settings_defaults(AppSettings *s)
     cs_strlcpy(s->hf_device, "auto", sizeof(s->hf_device));
 }
 
+static void migrate_legacy_settings(const char *destination)
+{
+    if (cs_file_exists(destination)) return;
+    char candidates[2][CS_PATH_MAX] = {{0}};
+    size_t count = 0;
+#ifdef CELLSCOPE_SOURCE_ROOT
+    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT))
+        cs_path_join(candidates[count++], CS_PATH_MAX, CELLSCOPE_SOURCE_ROOT, "settings.json");
+#endif
+    const char *root = cs_project_root();
+    if (count < CS_ARRAY_LEN(candidates) && root && root[0] && strcmp(root, "/") != 0)
+        cs_path_join(candidates[count++], CS_PATH_MAX, root, "settings.json");
+
+    for (size_t i = 0; i < count; i++) {
+        if (!cs_file_exists(candidates[i])) continue;
+        uint8_t *data = NULL;
+        size_t len = 0;
+        if (cs_read_file(candidates[i], &data, &len) && data) {
+            cs_write_file(destination, data, len);
+            free(data);
+            return;
+        }
+    }
+}
+
 bool settings_init(AppSettings *s, char *err, size_t err_cap)
 {
     settings_defaults(s);
@@ -34,17 +59,9 @@ bool settings_init(AppSettings *s, char *err, size_t err_cap)
         cs_strlcpy(s->path, override, sizeof(s->path));
         return true;
     }
-#ifdef CELLSCOPE_SOURCE_ROOT
-    if (cs_is_dir(CELLSCOPE_SOURCE_ROOT)) {
-        cs_path_join(s->path, sizeof(s->path), CELLSCOPE_SOURCE_ROOT, "settings.json");
-        return true;
-    }
-#endif
-    const char *root = cs_project_root();
-    if (root && root[0] && strcmp(root, "/") != 0) {
-        cs_path_join(s->path, sizeof(s->path), root, "settings.json");
-        return true;
-    }
+
+    /* The application's work directory is authoritative. The source tree is
+     * only consulted once to migrate an older repository-local settings file. */
     char dir[CS_PATH_MAX];
     if (!cs_app_data_dir(dir, sizeof(dir))) {
         snprintf(err, err_cap, "Cannot determine the CellScope settings directory");
@@ -52,6 +69,7 @@ bool settings_init(AppSettings *s, char *err, size_t err_cap)
     }
     cs_mkdirs(dir);
     cs_path_join(s->path, sizeof(s->path), dir, "settings.json");
+    migrate_legacy_settings(s->path);
     return true;
 }
 

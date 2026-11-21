@@ -1,6 +1,6 @@
 # CellScope
 
-**Current version:** `0.2.2`
+**Current version:** `0.2.3`
 
 ## Origin and research mission
 
@@ -350,7 +350,8 @@ Everything the app downloads lives there:
 - `runtime/venv/` — the base MiniMind environment plus one isolated
   `runtime/venv/<owner__model>/` environment per downloaded HF model;
 - `runtime/hf-models/` — downloaded Hugging Face snapshots;
-- `settings.json` — app settings;
+- `settings.json` — app settings (an older repository-local file is copied
+  here once on first launch, then ignored);
 - `training/` — training output by default;
 - `datasets/` — one timestamped folder per capture session;
 - `cellscope.log`.
