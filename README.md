@@ -159,21 +159,40 @@ ModelScope, and Hugging Face if you download an HF model.
 
 ## Build
 
-### Production releases
+### Versioning and production releases
+
+CellScope uses semantic versioning:
+
+- A normal commit bumps the **patch** version through `.githooks/pre-commit`.
+- `scripts/release.sh` bumps the **minor** version.
+- Adding `--publish` bumps the **major** version and marks the release
+  production-ready.
+
+Install the commit hook once:
+
+```bash
+git config core.hooksPath .githooks
+```
 
 The release helper builds through GitHub Actions for one or all platforms:
 
 ```bash
 ./scripts/release.sh --os All
-./scripts/release.sh --os macOS --bump patch
-./scripts/release.sh --os Linux --version 0.2.0
+./scripts/release.sh --os macOS
+./scripts/release.sh --os Linux --publish
 ```
 
-It updates the version in `CMakeLists.txt` and this README, commits and pushes
-the change, syncs the `Radio-Defense/cellscope` fork from the upstream
-repository, dispatches `cmake-multi-platform.yml`, and opens the run in the
-browser. It requires a clean `main` branch and an authenticated GitHub CLI
-account with owner access to `Radio-Defense`.
+It updates the version in `CMakeLists.txt`, the README and the workflow's
+fallback version, commits and pushes the change, syncs the
+`Radio-Defense/cellscope` fork from the upstream repository, dispatches
+`cmake-multi-platform.yml`, and opens the run in the browser.
+
+Releases without `--publish` are marked **non-production ready** and GitHub
+pre-releases. Releases with `--publish` are marked **production ready**. Release
+titles use the form `CellScope v0.1.0`.
+
+It requires a clean `main` branch and an authenticated GitHub CLI account with
+owner access to `Radio-Defense`.
 
 ### macOS
 

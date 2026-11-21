@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# Build a production CellScope release through GitHub Actions.
+# Build a CellScope release through GitHub Actions.
 #
-# Usage:
-#   ./scripts/release.sh --os All
-#   ./scripts/release.sh --os macOS --bump patch
-#   ./scripts/release.sh --os Linux --version 0.2.0
-#
-# The script updates CMakeLists.txt, README.md and the workflow's fallback
-# version, commits and pushes them, syncs the Radio-Defense fork, dispatches the
-# multi-platform workflow, and opens the resulting run in the browser.
+# Normal commits bump the patch version via .githooks/pre-commit.
+# Running this script bumps the minor version.
+# Adding --publish bumps the major version and marks the release production-ready.
 
 set -euo pipefail
 
@@ -23,8 +18,7 @@ BRANCH="main"
 RUN_REPO="${RUN_REPO:-$UPSTREAM}"
 
 OS="All"
-VERSION_ARG=""
-BUMP=""
+PUBLISH=0
 OPEN_BROWSER=1
 
 die() {
@@ -34,20 +28,18 @@ die() {
 
 usage() {
     cat <<'EOF'
-Usage: scripts/release.sh --os <macOS|Windows|Linux|All> [options]
+Usage: scripts/release.sh --os <macOS|Windows|Linux|All> [--publish] [--no-open]
 
 Options:
-  --os OS           Build target: macOS, Windows, Linux, or All (default: All)
-  --version X.Y.Z   Explicit semantic version; otherwise use the current version
-  --bump PART       Bump current version before release: major, minor, or patch
-  --no-open         Do not open the GitHub Actions run in a browser
-  -h, --help        Show this help
+  --os OS      Build target: macOS, Windows, Linux, or All (default: All)
+  --publish    Bump major version and label the release production-ready
+  --no-open    Do not open the GitHub Actions run in a browser
+  -h, --help   Show this help
 
-The script requires a clean main branch, an authenticated gh CLI, and owner
-access to the Radio-Defense organisation. It pushes to the upstream repository,
-syncs the Radio-Defense/cellscope fork, then dispatches the workflow from the
-upstream repository. Set RUN_REPO=Radio-Defense/cellscope to dispatch from the
-fork instead.
+Without --publish, the minor version is bumped and the release is marked
+non-production ready. Install the patch-bump hook once with:
+
+  git config core.hooksPath .githooks
 EOF
 }
 
@@ -58,15 +50,9 @@ while [ "$#" -gt 0 ]; do
             OS="$2"
             shift 2
             ;;
-        --version)
-            [ "$#" -ge 2 ] || die "--version requires a value"
-            VERSION_ARG="$2"
-            shift 2
-            ;;
-        --bump)
-            [ "$#" -ge 2 ] || die "--bump requires a value"
-            BUMP="$2"
-            shift 2
+        --publish)
+            PUBLISH=1
+            shift
             ;;
         --no-open)
             OPEN_BROWSER=0
@@ -90,16 +76,6 @@ case "$OS" in
     *) die "--os must be one of: macOS, Windows, Linux, All" ;;
 esac
 
-if [ -n "$VERSION_ARG" ] && [ -n "$BUMP" ]; then
-    die "--version and --bump cannot be used together"
-fi
-if [ -n "$VERSION_ARG" ] && ! [[ "$VERSION_ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    die "--version must be a semantic version such as 1.2.3"
-fi
-if [ -n "$BUMP" ] && ! [[ "$BUMP" =~ ^(major|minor|patch)$ ]]; then
-    die "--bump must be major, minor, or patch"
-fi
-
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v gh >/dev/null 2>&1 || die "gh (GitHub CLI) is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
@@ -107,28 +83,17 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required"
 [ "$(git branch --show-current)" = "$BRANCH" ] || die "release must run from the $BRANCH branch"
 [ -z "$(git status --porcelain)" ] || die "working tree is dirty; commit or stash changes first"
 
-CMakeLists="$ROOT/CMakeLists.txt"
-README="$ROOT/README.md"
-WORKFLOW_FILE="$ROOT/.github/workflows/$WORKFLOW"
+git config core.hooksPath .githooks
 
-current=$(sed -n 's/^project(CellScope VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\) LANGUAGES C)$/\1/p' "$CMakeLists" | head -n 1)
-[ -n "$current" ] || die "could not read the project version from CMakeLists.txt"
+current=$(python3 "$ROOT/scripts/version.py" read)
+[ -n "$current" ] || die "could not read the current project version"
 
-VERSION="$current"
-if [ -n "$VERSION_ARG" ]; then
-    VERSION="$VERSION_ARG"
-elif [ -n "$BUMP" ]; then
-    IFS=. read -r major minor patch <<< "$current"
-    case "$BUMP" in
-        major) major=$((major + 1)); minor=0; patch=0 ;;
-        minor) minor=$((minor + 1)); patch=0 ;;
-        patch) patch=$((patch + 1)) ;;
-    esac
-    VERSION="$major.$minor.$patch"
+IFS=. read -r major minor patch <<< "$current"
+if [ "$PUBLISH" = 1 ]; then
+    VERSION="$((major + 1)).0.0"
+else
+    VERSION="$major.$((minor + 1)).0"
 fi
-
-grep -q '\*\*Current version:\*\* `[^`]*`' "$README" ||
-    die "README is missing the '**Current version:** \`x.y.z\`' marker"
 
 if ! gh auth status >/dev/null 2>&1; then
     printf 'GitHub CLI is not authenticated; starting gh auth login...\n'
@@ -144,53 +109,18 @@ read -r is_fork parent_repo default_branch <<< "$(gh api "repos/$FORK" --jq '[.f
 [ "$parent_repo" = "$UPSTREAM" ] || die "$FORK is not a fork of $UPSTREAM (found $parent_repo)"
 [ "$default_branch" = "$BRANCH" ] || die "$FORK default branch is $default_branch, expected $BRANCH"
 
-printf 'Preparing CellScope v%s for %s\n' "$VERSION" "$OS"
+printf 'Preparing CellScope v%s for %s (%s)\n' \
+    "$VERSION" "$OS" "$([ "$PUBLISH" = 1 ] && echo production || echo non-production)"
 
-python3 - "$VERSION" "$CMakeLists" "$README" "$WORKFLOW_FILE" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-version, cmake_path, readme_path, workflow_path = sys.argv[1:]
-cmake = Path(cmake_path)
-readme = Path(readme_path)
-workflow = Path(workflow_path)
-
-text = cmake.read_text()
-text, n = re.subn(
-    r"^project\(CellScope VERSION \d+\.\d+\.\d+ LANGUAGES C\)$",
-    f"project(CellScope VERSION {version} LANGUAGES C)",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if n != 1:
-    raise SystemExit("could not update project version in CMakeLists.txt")
-cmake.write_text(text)
-
-text = readme.read_text()
-text, n = re.subn(
-    r"(\*\*Current version:\*\* `)[^`]+(`)",
-    rf"\g<1>{version}\g<2>",
-    text,
-    count=1,
-)
-if n != 1:
-    raise SystemExit("could not update README version marker")
-readme.write_text(text)
-
-text = workflow.read_text()
-text = re.sub(r"v\d+\.\d+\.\d+", f"v{version}", text)
-workflow.write_text(text)
-PY
-
+python3 "$ROOT/scripts/version.py" set "$VERSION" >/dev/null
 git diff --check
+git add "$ROOT/CMakeLists.txt" "$ROOT/README.md" \
+    "$ROOT/.github/workflows/$WORKFLOW"
 
-git add "$CMakeLists" "$README" "$WORKFLOW_FILE"
 if git diff --cached --quiet; then
     printf 'Version is already %s; no version commit needed.\n' "$VERSION"
 else
-    git commit -m "Release v$VERSION [skip ci]"
+    CELLSCOPE_SKIP_VERSION_BUMP=1 git commit -m "Release v$VERSION [skip ci]"
 fi
 
 printf 'Pushing %s...\n' "$BRANCH"
@@ -209,9 +139,12 @@ before=$(gh run list --repo "$RUN_REPO" --workflow "$WORKFLOW" --event workflow_
 OS_INPUT="$OS"
 [ "$OS" = "All" ] && OS_INPUT="all"
 
+PUBLISH_INPUT=false
+[ "$PUBLISH" = 1 ] && PUBLISH_INPUT=true
+
 printf 'Dispatching %s on %s for %s...\n' "$WORKFLOW" "$RUN_REPO" "$OS"
 gh workflow run "$WORKFLOW" --repo "$RUN_REPO" --ref "$BRANCH" \
-    -f os="$OS_INPUT" -f version="v$VERSION"
+    -f os="$OS_INPUT" -f version="v$VERSION" -f publish="$PUBLISH_INPUT"
 
 run_url=""
 for _ in $(seq 1 45); do
