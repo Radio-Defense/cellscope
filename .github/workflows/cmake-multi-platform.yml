@@ -164,8 +164,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path build/Release/* \
-            -DestinationPath dist/CellScope-windows-x64.zip
+          Compress-Archive -Path "build/Release/*" -DestinationPath "dist/CellScope-windows-x64.zip"
 
       - name: Upload packaged build
         uses: actions/upload-artifact@v4
