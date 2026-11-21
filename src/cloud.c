@@ -164,6 +164,7 @@ static long http_json(const char *method, const char *url, const char *body,
 
 static bool http_put_file(const char *url, const char *path, char *err, size_t cap)
 {
+    Buffer response = {0};
     FILE *f = fopen(path, "rb");
     if (!f) {
         snprintf(err, cap, "Could not read %s", path);
@@ -193,6 +194,8 @@ static bool http_put_file(const char *url, const char *path, char *err, size_t c
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 300000L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "CellScope/0.1");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     CURLcode rc = curl_easy_perform(curl);
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
@@ -200,13 +203,17 @@ static bool http_put_file(const char *url, const char *path, char *err, size_t c
     curl_easy_cleanup(curl);
     fclose(f);
     if (rc != CURLE_OK) {
-        snprintf(err, cap, "Upload failed: %s", curl_easy_strerror(rc));
+        snprintf(err, cap, "PUT %s failed: %s", url, curl_easy_strerror(rc));
+        free(response.data);
         return false;
     }
     if (code < 200 || code >= 300) {
-        snprintf(err, cap, "Upload returned HTTP %ld", code);
+        snprintf(err, cap, "PUT %s returned HTTP %ld: %.300s", url, code,
+                 response.data ? response.data : "(empty response)");
+        free(response.data);
         return false;
     }
+    free(response.data);
     return true;
 }
 
@@ -248,15 +255,15 @@ static void api_join(char *out, size_t cap, const char *base, const char *path)
     cs_strlcat(out, path, cap);
 }
 
-static bool api_error(const char *response, char *message, size_t cap)
+static void api_failure(char *message, size_t cap, const char *method, const char *url,
+                        long code, const char *response)
 {
-    if (!response) return false;
     char err[512] = {0};
-    if (cs_json_get_string(response, "error", err, sizeof(err)) && err[0]) {
-        snprintf(message, cap, "%s", err);
-        return true;
-    }
-    return false;
+    if (response && cs_json_get_string(response, "error", err, sizeof(err)) && err[0])
+        snprintf(message, cap, "%s %s -> HTTP %ld: %s", method, url, code, err);
+    else
+        snprintf(message, cap, "%s %s -> HTTP %ld: %.200s", method, url, code,
+                 response ? response : "(empty response)");
 }
 
 static bool enroll_request(const char *api_base, const char *email, char *message,
@@ -302,8 +309,7 @@ static bool enroll_request(const char *api_base, const char *email, char *messag
         free(response);
         return true;
     }
-    if (!api_error(response, message, message_cap))
-        snprintf(message, message_cap, "Enrollment failed (HTTP %ld)", code);
+    api_failure(message, message_cap, "POST", url, code, response);
     free(response);
     return false;
 }
@@ -347,8 +353,7 @@ bool cloud_device_status(const char *api_base, char *status, size_t status_cap,
         free(response);
         return true;
     }
-    if (!api_error(response, message, message_cap))
-        snprintf(message, message_cap, "Status check failed (HTTP %ld)", code);
+    api_failure(message, message_cap, "GET", url, code, response);
     free(response);
     return false;
 }
@@ -424,8 +429,7 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
     char *response = NULL;
     long code = http_json("POST", url, body, &response, err, sizeof(err));
     if (code != 201) {
-        if (!api_error(response, message, message_cap))
-            snprintf(message, message_cap, "Upload request failed (HTTP %ld)", code);
+        api_failure(message, message_cap, "POST", url, code, response);
         free(response);
         return false;
     }
@@ -471,8 +475,7 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
         free(response);
         return true;
     }
-    if (!api_error(response, message, message_cap))
-        snprintf(message, message_cap, "Completion failed (HTTP %ld)", code);
+    api_failure(message, message_cap, "POST", url, code, response);
     free(response);
     return false;
 }

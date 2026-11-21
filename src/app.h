@@ -188,6 +188,7 @@ typedef struct App {
     SDL_AtomicInt quit;
     SDL_Thread *adb_thread;
     SDL_Thread *vlm_thread;
+    SDL_Thread *cloud_status_thread;
 
     CellSample cells[CELL_MAX];
     int cell_head;

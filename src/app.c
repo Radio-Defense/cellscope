@@ -30,6 +30,7 @@
 
 static void app_log(App *app, const char *fmt, ...);
 static void app_export_json_to(App *app, const char *path);
+static int cloud_status_thread(void *arg);
 static bool has_json_suffix(const char *path);
 static const char *file_basename(const char *path);
 static int SDLCALL cellscope_adb_thread(void *data);
@@ -1329,6 +1330,41 @@ static void readme_fixture_seed(App *app)
     SDL_UnlockMutex(app->mu);
 }
 
+static int cloud_status_thread(void *arg)
+{
+    App *app = (App *)arg;
+    while (!SDL_GetAtomicInt(&app->quit)) {
+        SDL_Delay(3000);
+        if (SDL_GetAtomicInt(&app->quit)) break;
+
+        char api[512], current[512];
+        bool open = false;
+        SDL_LockMutex(app->mu);
+        open = app->upload_modal_open;
+        cs_strlcpy(api, app->settings.upload_api_url, sizeof(api));
+        cs_strlcpy(current, app->upload_status, sizeof(current));
+        SDL_UnlockMutex(app->mu);
+        if (!open || !api[0]) continue;
+
+        char status[32] = {0}, message[512] = {0};
+        if (!cloud_device_status(api, status, sizeof(status), message, sizeof(message))) continue;
+
+        SDL_LockMutex(app->mu);
+        bool waiting = !app->upload_status[0] ||
+                       strstr(app->upload_status, "Check ") == app->upload_status ||
+                       strstr(app->upload_status, "Waiting for email") == app->upload_status;
+        if (strcmp(status, "active") == 0 && waiting)
+            cs_strlcpy(app->upload_status, "Email verified. Ready to upload.",
+                       sizeof(app->upload_status));
+        else if (strcmp(status, "pending") == 0 && waiting)
+            cs_strlcpy(app->upload_status, "Waiting for email verification...",
+                       sizeof(app->upload_status));
+        SDL_UnlockMutex(app->mu);
+        (void)current;
+    }
+    return 0;
+}
+
 bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t err_cap)
 {
     app->win = win;
@@ -1514,6 +1550,9 @@ bool app_init(App *app, SDL_Window *win, SDL_Renderer *ren, char *err, size_t er
 
     app_log(app, "started: assets=%s captures=%s vlm=%s", app->asset_dir, app->capture_dir,
             app->vlm_mode[0] ? app->vlm_mode : "auto");
+    app->cloud_status_thread = SDL_CreateThread(cloud_status_thread, "cloud-status", app);
+    if (!app->cloud_status_thread)
+        app_log(app, "could not start cloud status thread");
     return true;
 }
 
@@ -1533,6 +1572,10 @@ void app_shutdown(App *app)
     if (app->vlm_thread) {
         SDL_WaitThread(app->vlm_thread, NULL);
         app->vlm_thread = NULL;
+    }
+    if (app->cloud_status_thread) {
+        SDL_WaitThread(app->cloud_status_thread, NULL);
+        app->cloud_status_thread = NULL;
     }
     if (app->mu) {
         SDL_LockMutex(app->mu);

@@ -142,6 +142,11 @@ device key and do not require email verification.
   `BREVO_SENDER_EMAIL` as a sender in Brevo.
 - `invalid device signature`: update CellScope; older builds read the Ed25519
   public key from the wrong offset when reloading the device key.
+- `B2 PUT ... 403 InvalidAccessKeyId`: `B2_KEY_ID` (or `B2_READ_KEY_ID`) is
+  wrong. Create B2 application keys again and update all four B2 secrets. The
+  key ID is the short application key ID, not the bucket ID or master key.
+- `B2 PUT ... 403 AccessDenied`: the key is valid but lacks `writeFiles`
+  (write key) or `readFiles` (read key), or it is scoped to another bucket.
 
 ## Limits and operational notes
 
