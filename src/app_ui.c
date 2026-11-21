@@ -152,8 +152,6 @@ static void draw_transport(App *app, UiState *s)
         ui_round_rect(ui, ui_rect(cx - 7, btn.y + 15, 5, 15), 1.5f, UI_TEXT);
         ui_round_rect(ui, ui_rect(cx + 2, btn.y + 15, 5, 15), 1.5f, UI_TEXT);
     }
-    ui_text_font(ui, FONT_SEMIBOLD, cx + 32, btn.y + 8, 9.2f, s->paused ? UI_AMBER : UI_ACCENT,
-                 s->paused ? "PAUSED" : "RUNNING");
     if (!ui->block_interactive && hover && ui->mouse_pressed) {
         app_toggle_pause(app);
         ui_consume_click(ui);
