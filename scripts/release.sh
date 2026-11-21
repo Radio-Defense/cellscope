@@ -15,7 +15,7 @@ UPSTREAM="maskirovka3301-oss/cellscope"
 FORK="$ORG/cellscope"
 WORKFLOW="cmake-multi-platform.yml"
 BRANCH="main"
-RUN_REPO="${RUN_REPO:-$UPSTREAM}"
+RUN_REPO="$FORK"
 
 OS="All"
 PUBLISH=0
@@ -37,7 +37,8 @@ Options:
   -h, --help   Show this help
 
 Without --publish, the minor version is bumped and the release is marked
-non-production ready. Install the patch-bump hook once with:
+non-production ready. Releases are published from the Radio-Defense fork.
+Install the patch-bump hook once with:
 
   git config core.hooksPath .githooks
 EOF

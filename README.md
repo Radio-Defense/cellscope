@@ -1,6 +1,6 @@
 # CellScope
 
-**Current version:** `0.1.0`
+**Current version:** `0.1.1`
 
 ## Origin and research mission
 
@@ -185,7 +185,8 @@ The release helper builds through GitHub Actions for one or all platforms:
 It updates the version in `CMakeLists.txt`, the README and the workflow's
 fallback version, commits and pushes the change, syncs the
 `Radio-Defense/cellscope` fork from the upstream repository, dispatches
-`cmake-multi-platform.yml`, and opens the run in the browser.
+`cmake-multi-platform.yml` in the fork, and opens the fork's run in the browser.
+The resulting releases are created under `Radio-Defense/cellscope`.
 
 Releases without `--publish` are marked **non-production ready** and GitHub
 pre-releases. Releases with `--publish` are marked **production ready**. Release
