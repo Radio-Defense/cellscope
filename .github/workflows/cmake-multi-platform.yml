@@ -32,25 +32,38 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ github.event.inputs.os }}" == "all" ]]; then
+            echo 'matrix={"include":[{"name":"macOS","os":"macos-14"},{"name":"Linux","os":"ubuntu-24.04"},{"name":"Windows","os":"windows-2022"}]}' >> "$GITHUB_OUTPUT"
+          else
+            case "${{ github.event.inputs.os }}" in
+              macOS)
+                echo 'matrix={"include":[{"name":"macOS","os":"macos-14"}]}' >> "$GITHUB_OUTPUT"
+                ;;
+              Linux)
+                echo 'matrix={"include":[{"name":"Linux","os":"ubuntu-24.04"}]}' >> "$GITHUB_OUTPUT"
+                ;;
+              Windows)
+                echo 'matrix={"include":[{"name":"Windows","os":"windows-2022"}]}' >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          fi
+
   build:
     name: ${{ matrix.name }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # Run all platforms on push/PR; only the selected one (or all) on workflow_dispatch
-    if: >
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.os == 'all' ||
-      github.event.inputs.os == matrix.name
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: macOS
-            os: macos-14
-          - name: Linux
-            os: ubuntu-24.04
-          - name: Windows
-            os: windows-2022
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
       - name: Check out sources
