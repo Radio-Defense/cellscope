@@ -77,7 +77,7 @@ static void layout(App *app, Layout *l)
     float pad = 18, gap = 14;
     l->header = ui_rect(0, 0, (float)w, 64);
     l->footer = ui_rect(0, (float)h - 28, (float)w, 28);
-    float y = 112 + app->ui_banner_h;
+    float y = 80 + app->ui_banner_h;
     float avail_h = (float)h - y - 28 - pad;
     float left_w = ((float)w - 2 * pad - gap) * 0.43f;
     float right_w = (float)w - 2 * pad - gap - left_w;
@@ -138,8 +138,7 @@ static void draw_transport(App *app, UiState *s)
 {
     Ui *ui = &app->ui;
     float cx = (float)ui->win_w / 2.0f;
-    ui_line(ui, 0, 107.5f, (float)ui->win_w, 107.5f, UI_BORDER_SOFT, 1);
-    UiRect btn = ui_rect(cx - 22, 64, 44, 44);
+    UiRect btn = ui_rect(cx - 22, 9, 44, 44);
     bool hover = ui_rect_contains(btn, ui->mx, ui->my);
     UiColor ring = s->paused ? UI_AMBER : UI_ACCENT;
     ui_circle(ui, btn.x + 22, btn.y + 22, 22, ring);
@@ -165,7 +164,7 @@ static void draw_runtime_banner(App *app, UiState *s)
 {
     if (app->ui_banner_h <= 0 || (!s->runtime.active && !s->runtime.error)) return;
     Ui *ui = &app->ui;
-    float y = 108, h = (float)app->ui_banner_h;
+    float y = 80, h = (float)app->ui_banner_h;
     UiColor accent = s->runtime.error ? UI_RED : UI_ACCENT;
     ui_rect_fill(ui, ui_rect(0, y, (float)ui->win_w, h), UI_COLOR(9, 14, 19, 248));
     ui_line(ui, 0, y + h - 0.5f, (float)ui->win_w, y + h - 0.5f, UI_BORDER_SOFT, 1);
