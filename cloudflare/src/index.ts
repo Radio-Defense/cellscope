@@ -62,7 +62,8 @@ function canonicalEnroll(body: any): string {
 
 function canonicalUpload(body: any): string {
   return ["cellscope-v1", "upload", body.device_id, body.upload_id, body.archive_name,
-    body.archive_sha512, body.nonce, String(body.issued_at)].join("\n");
+    body.archive_sha512, body.archive_sha256, body.sig_sha256, body.nonce,
+    String(body.issued_at)].join("\n");
 }
 
 function canonicalComplete(body: any): string {
@@ -138,7 +139,8 @@ function encodeRfc3986(value: string): string {
     `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-async function presignB2(env: Env, method: string, key: string, expiresIn = 180): Promise<string> {
+async function presignB2(env: Env, method: string, key: string, expiresIn = 180,
+                         extraHeaders: Record<string, string> = {}): Promise<string> {
   const keyId = method === "PUT" ? env.B2_KEY_ID : env.B2_READ_KEY_ID;
   const appKey = method === "PUT" ? env.B2_APP_KEY : env.B2_READ_APP_KEY;
   const now = new Date();
@@ -147,17 +149,26 @@ async function presignB2(env: Env, method: string, key: string, expiresIn = 180)
   const scope = `${dateStamp}/${env.B2_REGION}/s3/aws4_request`;
   const host = env.B2_S3_HOST;
   const uri = `/${encodeRfc3986(env.B2_BUCKET)}/${key.split("/").map(encodeRfc3986).join("/")}`;
+  const extraNames = Object.keys(extraHeaders).map((k) => k.toLowerCase()).sort();
+  const signedHeaders = ["host", ...extraNames].join(";");
   const params: Record<string, string> = {
     "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
     "X-Amz-Credential": `${keyId}/${scope}`,
     "X-Amz-Date": amzDate,
     "X-Amz-Expires": String(expiresIn),
-    "X-Amz-SignedHeaders": "host",
+    "X-Amz-SignedHeaders": signedHeaders,
   };
   const query = Object.keys(params).sort().map((k) =>
     `${encodeRfc3986(k)}=${encodeRfc3986(params[k])}`).join("&");
+  const canonicalHeaderLines = [`host:${host}`];
+  for (const name of extraNames) {
+    const value = extraHeaders[name] ?? extraHeaders[name.toLowerCase()];
+    if (value === undefined) continue;
+    canonicalHeaderLines.push(`${name}:${value.trim()}`);
+  }
   const canonicalRequest = [
-    method, uri, query, `host:${host}\n`, "host", "UNSIGNED-PAYLOAD",
+    method, uri, query, canonicalHeaderLines.join("\n") + "\n", signedHeaders,
+    "UNSIGNED-PAYLOAD",
   ].join("\n");
   const stringToSign = [
     "AWS4-HMAC-SHA256", amzDate, scope,
@@ -257,7 +268,9 @@ async function createUpload(request: Request, env: Env): Promise<Response> {
   const body = await request.json<any>().catch(() => null);
   if (!body || !validId(body.device_id) || !validId(body.upload_id) || !validId(body.nonce) ||
       !fresh(body.issued_at) || !validArchive(body.archive_name) ||
-      typeof body.archive_sha512 !== "string" || !/^[a-f0-9]{128}$/.test(body.archive_sha512))
+      typeof body.archive_sha512 !== "string" || !/^[a-f0-9]{128}$/.test(body.archive_sha512) ||
+      typeof body.archive_sha256 !== "string" || !/^[A-Za-z0-9+/]{43}=$/.test(body.archive_sha256) ||
+      typeof body.sig_sha256 !== "string" || !/^[A-Za-z0-9+/]{43}=$/.test(body.sig_sha256))
     return bad("invalid upload request");
 
   const device = await env.DB.prepare(
@@ -281,8 +294,10 @@ async function createUpload(request: Request, env: Env): Promise<Response> {
 
   return json({
     upload_id: body.upload_id,
-    archive_url: await presignB2(env, "PUT", archiveKey, 180),
-    sig_url: await presignB2(env, "PUT", sigKey, 180),
+    archive_url: await presignB2(env, "PUT", archiveKey, 180,
+      { "x-amz-checksum-sha256": body.archive_sha256 }),
+    sig_url: await presignB2(env, "PUT", sigKey, 180,
+      { "x-amz-checksum-sha256": body.sig_sha256 }),
     expires_in: 180,
   }, 201);
 }
@@ -310,24 +325,23 @@ async function completeUpload(request: Request, env: Env, uploadId: string): Pro
     return bad("nonce already used", 409);
   if (body.archive_size > MAX_ARCHIVE_BYTES) return bad("archive is too large", 413);
 
-  const archiveHead = await fetch(await presignB2(env, "HEAD", upload.archive_key, 180), { method: "HEAD" });
-  const sigHead = await fetch(await presignB2(env, "HEAD", upload.sig_key, 180), { method: "HEAD" });
-  if (!archiveHead.ok || !sigHead.ok) return bad("uploaded objects are not visible in B2", 409);
-  const archiveSize = Number(archiveHead.headers.get("content-length") || 0);
-  const sigSize = Number(sigHead.headers.get("content-length") || 0);
+  const sigResponse = await fetch(await presignB2(env, "GET", upload.sig_key, 180));
+  if (!sigResponse.ok) return bad(`could not read uploaded signature in B2 (HTTP ${sigResponse.status})`, 409);
+  const sigBytes = await sigResponse.arrayBuffer();
+  const sigSize = sigBytes.byteLength;
+  /* B2 can return 403 for HEAD on Object Lock objects even when GET works.
+     Read both objects and verify their bytes and sizes instead. */
+  const archive = await fetch(await presignB2(env, "GET", upload.archive_key, 180));
+  if (!archive.ok) return bad(`could not read uploaded archive in B2 (HTTP ${archive.status})`, 409);
+  const bytes = await archive.arrayBuffer();
+  const archiveSize = bytes.byteLength;
   if (archiveSize !== body.archive_size || sigSize !== body.sig_size)
     return bad("uploaded object sizes do not match", 409);
-
-  const archive = await fetch(await presignB2(env, "GET", upload.archive_key, 180));
-  if (!archive.ok) return bad("could not read uploaded archive", 502);
-  const bytes = await archive.arrayBuffer();
   if (await sha512Hex(bytes) !== upload.archive_sha512) {
     await env.DB.prepare("UPDATE uploads SET status = 'rejected' WHERE upload_id = ?").bind(uploadId).run();
     return bad("archive SHA-512 does not match", 409);
   }
-  const sigResponse = await fetch(await presignB2(env, "GET", upload.sig_key, 180));
-  if (!sigResponse.ok) return bad("could not read uploaded signature", 502);
-  const sigText = (await sigResponse.text()).trim();
+  const sigText = new TextDecoder().decode(sigBytes).trim();
   if (sigText !== `${upload.archive_sha512}  ${upload.archive_name}`) {
     await env.DB.prepare("UPDATE uploads SET status = 'rejected' WHERE upload_id = ?").bind(uploadId).run();
     return bad("signature sidecar does not match the archive", 409);

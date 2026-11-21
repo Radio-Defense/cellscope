@@ -162,7 +162,8 @@ static long http_json(const char *method, const char *url, const char *body,
     return code;
 }
 
-static bool http_put_file(const char *url, const char *path, char *err, size_t cap)
+static bool http_put_file(const char *url, const char *path, const char *checksum_b64,
+                          char *err, size_t cap)
 {
     Buffer response = {0};
     FILE *f = fopen(path, "rb");
@@ -185,6 +186,10 @@ static bool http_put_file(const char *url, const char *path, char *err, size_t c
     }
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/octet-stream");
+    char checksum_header[256];
+    snprintf(checksum_header, sizeof(checksum_header), "x-amz-checksum-sha256: %s",
+             checksum_b64);
+    headers = curl_slist_append(headers, checksum_header);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
     curl_easy_setopt(curl, CURLOPT_READDATA, f);
@@ -217,7 +222,8 @@ static bool http_put_file(const char *url, const char *path, char *err, size_t c
     return true;
 }
 
-static bool file_sha512(const char *path, char *out, size_t cap, long long *size_out,
+static bool file_hashes(const char *path, char *sha512_out, size_t sha512_cap,
+                        char *sha256_b64_out, size_t sha256_cap, long long *size_out,
                         char *err, size_t err_cap)
 {
     FILE *f = fopen(path, "rb");
@@ -227,11 +233,14 @@ static bool file_sha512(const char *path, char *out, size_t cap, long long *size
     }
     crypto_hash_sha512_state st;
     crypto_hash_sha512_init(&st);
+    crypto_hash_sha256_state st256;
+    crypto_hash_sha256_init(&st256);
     unsigned char buf[65536];
     long long total = 0;
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
         crypto_hash_sha512_update(&st, buf, n);
+        crypto_hash_sha256_update(&st256, buf, n);
         total += (long long)n;
     }
     bool ok = !ferror(f);
@@ -242,7 +251,10 @@ static bool file_sha512(const char *path, char *out, size_t cap, long long *size
     }
     unsigned char digest[crypto_hash_sha512_BYTES];
     crypto_hash_sha512_final(&st, digest);
-    hex(digest, sizeof(digest), out, cap);
+    hex(digest, sizeof(digest), sha512_out, sha512_cap);
+    unsigned char digest256[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256_final(&st256, digest256);
+    b64(digest256, sizeof(digest256), sha256_b64_out, sha256_cap);
     if (size_out) *size_out = total;
     return true;
 }
@@ -393,9 +405,13 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
 
     long long archive_size = 0, sig_size = 0;
     char archive_hash[129], sig_hash[129];
-    if (!file_sha512(archive_path, archive_hash, sizeof(archive_hash), &archive_size,
+    char archive_checksum[128], sig_checksum[128];
+    if (!file_hashes(archive_path, archive_hash, sizeof(archive_hash),
+                     archive_checksum, sizeof(archive_checksum), &archive_size,
                      err, sizeof(err)) ||
-        !file_sha512(sig_path, sig_hash, sizeof(sig_hash), &sig_size, err, sizeof(err))) {
+        !file_hashes(sig_path, sig_hash, sizeof(sig_hash),
+                     sig_checksum, sizeof(sig_checksum), &sig_size,
+                     err, sizeof(err))) {
         snprintf(message, message_cap, "%s", err);
         return false;
     }
@@ -406,8 +422,9 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
     snprintf(issued, sizeof(issued), "%lld", (long long)(cs_epoch_ms() / 1000));
     char canonical[4096];
     snprintf(canonical, sizeof(canonical),
-             "cellscope-v1\nupload\n%s\n%s\n%s\n%s\n%s\n%s",
-             device_id, upload_id, archive_name, archive_hash, nonce, issued);
+             "cellscope-v1\nupload\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s",
+             device_id, upload_id, archive_name, archive_hash, archive_checksum,
+             sig_checksum, nonce, issued);
     unsigned char sig[crypto_sign_BYTES];
     unsigned long long sig_len = 0;
     if (crypto_sign_detached(sig, &sig_len, (const unsigned char *)canonical,
@@ -421,9 +438,11 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
     char body[8192];
     snprintf(body, sizeof(body),
              "{\"device_id\":\"%s\",\"upload_id\":\"%s\",\"archive_name\":\"%s\","
-             "\"archive_sha512\":\"%s\",\"nonce\":\"%s\",\"issued_at\":%s,"
+             "\"archive_sha512\":\"%s\",\"archive_sha256\":\"%s\","
+             "\"sig_sha256\":\"%s\",\"nonce\":\"%s\",\"issued_at\":%s,"
              "\"signature\":\"%s\"}",
-             device_id, upload_id, archive_name, archive_hash, nonce, issued, signature);
+             device_id, upload_id, archive_name, archive_hash, archive_checksum,
+             sig_checksum, nonce, issued, signature);
     char url[CS_PATH_MAX];
     api_join(url, sizeof(url), api_base, "/v1/uploads");
     char *response = NULL;
@@ -442,8 +461,8 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
         return false;
     }
 
-    if (!http_put_file(archive_url, archive_path, err, sizeof(err)) ||
-        !http_put_file(sig_url, sig_path, err, sizeof(err))) {
+    if (!http_put_file(archive_url, archive_path, archive_checksum, err, sizeof(err)) ||
+        !http_put_file(sig_url, sig_path, sig_checksum, err, sizeof(err))) {
         snprintf(message, message_cap, "%s", err);
         return false;
     }
@@ -468,7 +487,6 @@ bool cloud_upload_archive(const char *api_base, const char *archive_path,
     char complete_path[256];
     snprintf(complete_path, sizeof(complete_path), "/v1/uploads/%s/complete", upload_id);
     api_join(url, sizeof(url), api_base, complete_path);
-    free(response);
     code = http_json("POST", url, body, &response, err, sizeof(err));
     if (code == 200) {
         snprintf(message, message_cap, "Upload accepted by CellScope.");

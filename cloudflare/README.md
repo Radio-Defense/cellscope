@@ -142,11 +142,25 @@ device key and do not require email verification.
   `BREVO_SENDER_EMAIL` as a sender in Brevo.
 - `invalid device signature`: update CellScope; older builds read the Ed25519
   public key from the wrong offset when reloading the device key.
-- `B2 PUT ... 403 InvalidAccessKeyId`: `B2_KEY_ID` (or `B2_READ_KEY_ID`) is
-  wrong. Create B2 application keys again and update all four B2 secrets. The
-  key ID is the short application key ID, not the bucket ID or master key.
+- `B2 PUT ... 403 InvalidAccessKeyId`: the key ID is not accepted at this S3
+  endpoint. Verify that `B2_REGION`/`B2_S3_HOST` exactly match the bucket's
+  Endpoint. An application key is valid only for its account/bucket region.
+  Legacy regions such as `us-west-003` have no `s3.<region>.backblazeb2.com`
+  endpoint; create the bucket in an S3-compatible region such as `us-west-004`,
+  or create a new B2 account in that region, then create new keys.
 - `B2 PUT ... 403 AccessDenied`: the key is valid but lacks `writeFiles`
   (write key) or `readFiles` (read key), or it is scoped to another bucket.
+- A key can authenticate successfully against the Native API and still be
+  unusable for the S3 API if the bucket's region has no S3 endpoint. Check the
+  bucket Endpoint first, not just the key.
+
+## Object Lock buckets
+
+If the B2 bucket has Object Lock enabled, B2 requires a checksum header on every
+PUT. CellScope signs `x-amz-checksum-sha256` into both presigned URLs and sends
+the matching SHA-256 for the archive and `.sig` sidecar. Do not remove that
+header. B2 may return 403 for `HEAD` on Object Lock objects even when `GET`
+works; the Worker verifies with `GET` responses instead.
 
 ## Limits and operational notes
 
