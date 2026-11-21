@@ -41,11 +41,11 @@ jobs:
         id: set-matrix
         run: |
           if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ github.event.inputs.os }}" == "all" ]]; then
-            echo 'matrix={"include":[{"name":"macOS","os":"macos-14"},{"name":"Linux","os":"ubuntu-24.04"},{"name":"Windows","os":"windows-2022"}]}' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[{"name":"macOS","os":"macos-15"},{"name":"Linux","os":"ubuntu-24.04"},{"name":"Windows","os":"windows-2022"}]}' >> "$GITHUB_OUTPUT"
           else
             case "${{ github.event.inputs.os }}" in
               macOS)
-                echo 'matrix={"include":[{"name":"macOS","os":"macos-14"}]}' >> "$GITHUB_OUTPUT"
+                echo 'matrix={"include":[{"name":"macOS","os":"macos-15"}]}' >> "$GITHUB_OUTPUT"
                 ;;
               Linux)
                 echo 'matrix={"include":[{"name":"Linux","os":"ubuntu-24.04"}]}' >> "$GITHUB_OUTPUT"
