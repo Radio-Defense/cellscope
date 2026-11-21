@@ -96,3 +96,70 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/cellscope.app dist/CellScope-macos-arm64.zip
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          tar -czf dist/CellScope-linux-x86_64.tar.gz \
+            -C build cellscope assets scripts third_party
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path build/Release/* \
+            -DestinationPath dist/CellScope-windows-x64.zip
+
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: cellscope-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release files
+        run: find dist -maxdepth 2 -type f -print
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: v0.2.0-build.${{ github.run_number }}
+          name: CellScope v0.2.0 build ${{ github.run_number }}
+          body: |
+            Automated multi-platform build of CellScope.
+
+            Assets:
+            - macOS (Apple silicon) application bundle
+            - Linux x86_64 executable and runtime assets
+            - Windows x64 executable and runtime assets
+
+            The Python reader runtime is downloaded on first launch.
+          files: dist/*
+          fail_on_unmatched_files: true
+          prerelease: true
+          generate_release_notes: true
