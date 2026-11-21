@@ -213,7 +213,7 @@ typedef struct App {
     char model_paths[16][CS_PATH_MAX];
     bool reload_runtime;
     int settings_focus;
-    char settings_edit[7][CS_PATH_MAX];
+    char settings_edit[9][CS_PATH_MAX];
     char settings_target[CS_PATH_MAX];
     char settings_error[256];
     bool want_check;
@@ -238,6 +238,10 @@ typedef struct App {
     bool paused;
     bool session_active;
     bool session_write_failed;
+    bool silent_export;
+    char last_export_archive[CS_PATH_MAX];
+    char last_export_sig[CS_PATH_MAX];
+    char upload_status[512];
     int64_t session_started_ms;
     uint64_t session_cell_start;
     uint64_t session_meter_start;
@@ -309,6 +313,8 @@ void app_close_settings_modal(App *app);
 void app_save_settings_modal(App *app);
 void app_open_upload_modal(App *app);
 void app_close_upload_modal(App *app);
+void app_upload_dataset(App *app);
+void app_enroll_device(App *app);
 void app_open_model_modal(App *app);
 void app_close_model_modal(App *app);
 void app_select_hf_model(App *app, int index);

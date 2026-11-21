@@ -1,0 +1,17 @@
+name = "cellscope-upload"
+main = "src/index.ts"
+compatibility_date = "2026-11-21"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cellscope-upload"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+B2_REGION = "us-west-004"
+B2_S3_HOST = "s3.us-west-004.backblazeb2.com"
+B2_BUCKET = "cellscope-datasets"
+VERIFY_BASE_URL = "https://cellscope-upload.YOUR-SUBDOMAIN.workers.dev"
+BREVO_SENDER_EMAIL = "verify@example.com"
+BREVO_SENDER_NAME = "CellScope"

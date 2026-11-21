@@ -1,4 +1,5 @@
 #include "app.h"
+#include "cloud.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -374,6 +375,8 @@ void app_open_settings_modal(App *app)
     snprintf(app->settings_edit[4], CS_PATH_MAX, "%d", s->hf_port);
     cs_strlcpy(app->settings_edit[5], s->hf_device, CS_PATH_MAX);
     snprintf(app->settings_edit[6], CS_PATH_MAX, "%d", s->camera_index);
+    cs_strlcpy(app->settings_edit[7], s->upload_api_url, CS_PATH_MAX);
+    cs_strlcpy(app->settings_edit[8], s->upload_email, CS_PATH_MAX);
     cs_path_join(app->settings_target, sizeof(app->settings_target), base, "settings.json");
     app->settings_focus = 0;
     app->settings_error[0] = '\0';
@@ -430,6 +433,8 @@ void app_save_settings_modal(App *app)
         return;
     }
     tmp.camera_index = (int)camera;
+    cs_strlcpy(tmp.upload_api_url, app->settings_edit[7], sizeof(tmp.upload_api_url));
+    cs_strlcpy(tmp.upload_email, app->settings_edit[8], sizeof(tmp.upload_email));
     if (strcmp(tmp.reader_backend, "minimind") != 0 &&
         strcmp(tmp.reader_backend, "hf") != 0) {
         cs_strlcpy(app->settings_error, "Reader backend must be \"minimind\" or \"hf\".",
@@ -450,6 +455,55 @@ void app_save_settings_modal(App *app)
     SDL_StopTextInput(app->win);
     app_notify(app, false, "Settings saved to %s. Restart CellScope to apply.",
                app->settings_target);
+}
+
+void app_enroll_device(App *app)
+{
+    char message[512] = {0};
+    char api[512], email[256];
+    SDL_LockMutex(app->mu);
+    cs_strlcpy(api, app->settings.upload_api_url, sizeof(api));
+    cs_strlcpy(email, app->settings.upload_email, sizeof(email));
+    SDL_UnlockMutex(app->mu);
+    bool ok = cloud_enroll(api, email, message, sizeof(message));
+    SDL_LockMutex(app->mu);
+    cs_strlcpy(app->upload_status, message, sizeof(app->upload_status));
+    SDL_UnlockMutex(app->mu);
+    app_notify(app, !ok, "%s", message);
+}
+
+void app_upload_dataset(App *app)
+{
+    char api[512];
+    SDL_LockMutex(app->mu);
+    cs_strlcpy(api, app->settings.upload_api_url, sizeof(api));
+    app->upload_status[0] = '\0';
+    app->silent_export = true;
+    SDL_UnlockMutex(app->mu);
+
+    app_export_dataset(app);
+
+    SDL_LockMutex(app->mu);
+    app->silent_export = false;
+    char archive[CS_PATH_MAX], sig[CS_PATH_MAX];
+    cs_strlcpy(archive, app->last_export_archive, sizeof(archive));
+    cs_strlcpy(sig, app->last_export_sig, sizeof(sig));
+    SDL_UnlockMutex(app->mu);
+
+    if (!archive[0] || !sig[0]) {
+        SDL_LockMutex(app->mu);
+        cs_strlcpy(app->upload_status, "Could not create a signed dataset archive.",
+                   sizeof(app->upload_status));
+        SDL_UnlockMutex(app->mu);
+        return;
+    }
+
+    char message[512] = {0};
+    bool ok = cloud_upload_archive(api, archive, sig, message, sizeof(message));
+    SDL_LockMutex(app->mu);
+    cs_strlcpy(app->upload_status, message, sizeof(app->upload_status));
+    SDL_UnlockMutex(app->mu);
+    app_notify(app, !ok, "%s", message);
 }
 
 void app_open_upload_modal(App *app)
@@ -3013,6 +3067,8 @@ void app_export_dataset(App *app)
 {
     char dir[CS_PATH_MAX] = {0};
     char name[128] = {0};
+    app->last_export_archive[0] = '\0';
+    app->last_export_sig[0] = '\0';
     SDL_LockMutex(app->mu);
     if (app->session_active) session_write_locked(app);
     cs_strlcpy(dir, app->session_dir, sizeof(dir));
@@ -3072,15 +3128,18 @@ void app_export_dataset(App *app)
         app_notify(app, true, "Could not sign the export: %s", err);
         return;
     }
+    cs_strlcpy(app->last_export_archive, archive, sizeof(app->last_export_archive));
+    snprintf(app->last_export_sig, sizeof(app->last_export_sig), "%s.sig", archive);
 
-    if (!getenv("CELLSCOPE_EXPORT_NO_OPEN")) {
+    if (!app->silent_export && !getenv("CELLSCOPE_EXPORT_NO_OPEN")) {
         char url[CS_PATH_MAX + 16];
         snprintf(url, sizeof(url), "file://%s", exports);
         SDL_OpenURL(url);
     }
     app_log(app, "exported dataset %s (%d file signatures): %s", name, hashed, archive);
-    app_notify(app, false, "Exported %d signed files and dataset-%s.tar.gz to %s", hashed,
-               name, exports);
+    if (!app->silent_export)
+        app_notify(app, false, "Exported %d signed files and dataset-%s.tar.gz to %s", hashed,
+                   name, exports);
 }
 
 void app_save_window_png(App *app, const char *path)

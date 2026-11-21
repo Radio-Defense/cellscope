@@ -1,6 +1,6 @@
 # CellScope
 
-**Current version:** `0.2.1`
+**Current version:** `0.2.2`
 
 ## Origin and research mission
 
@@ -137,10 +137,12 @@ and preserves the processor's image inputs and attention mask; the GLM-OCR path
 uses its own chat template and `Text Recognition:` prompt. There is no telemetry
 and no cloud inference. Images are not uploaded during capture or analysis.
 
-In the future, users will be able to upload their generated datasets once a
-secure, redundant storage mechanism is available. Uploading is not implemented
-yet. The one-time runtime/model downloads come from uv's GitHub releases,
-ModelScope, and Hugging Face if you download an HF model.
+Uploads use the optional Cloudflare Worker + D1 + Brevo + Backblaze B2 backend
+in [`cloudflare/`](cloudflare/README.md). The device enrolls by email once; every
+later upload is signed with the device's Ed25519 key and uses a single-object
+180-second B2 PUT URL. The B2 credentials never enter the app. The one-time
+runtime/model downloads come from uv's GitHub releases, ModelScope, and Hugging
+Face if you download an HF model.
 
 
 ## Stack
@@ -152,6 +154,8 @@ ModelScope, and Hugging Face if you download an HF model.
 | 2D UI / text | SDL3 renderer + FreeType, small immediate-mode toolkit |
 | ADB | `adb` subprocess, captured with a hard timeout; telephony + Wi-Fi scans |
 | Reader HTTP | libcurl → Ollama or llama.cpp server (OpenAI-compatible) |
+| Upload signing | libsodium Ed25519 device keys |
+| Upload broker | Cloudflare Worker + D1 + Brevo; direct B2 presigned PUT |
 | PNG | stb_image / stb_image_write |
 | Training | MiniMind-V submodule + a small Parquet converter |
 | Private runtime | uv-managed CPython 3.11 + venv, auto-installed on first run |
@@ -198,7 +202,7 @@ owner access to `Radio-Defense`.
 ### macOS
 
 ```bash
-brew install cmake sdl3 freetype curl
+brew install cmake sdl3 freetype curl libsodium
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 open build/cellscope.app
@@ -267,7 +271,7 @@ build.
 ### Linux
 
 ```bash
-sudo apt install build-essential cmake libfreetype-dev libcurl4-openssl-dev
+sudo apt install build-essential cmake libfreetype-dev libcurl4-openssl-dev libsodium-dev
 # SDL3 3.4+ is required for the camera API. If your distro does not package it:
 #   git clone https://github.com/libsdl-org/SDL.git -b release-3.2
 #   cmake -S SDL -B SDL/build -DCMAKE_BUILD_TYPE=Release && cmake --build SDL/build -j
@@ -628,11 +632,19 @@ Capture data defaults under `~/.cellscope/datasets/` (or
 `<--capture-dir>/datasets/`).
 
 The top bar also has **Upload** and **Settings** buttons. **Settings** opens an
-editor for every field in the working-directory `settings.json`; changes are
-saved atomically and apply after restart. **Upload** explains that online
-storage is not implemented yet. The reader-model pill lists every downloaded
-model under `runtime/hf-models` and switches the local inference server to the
-selected one.
+editor for every field in the working-directory `settings.json`, including
+`upload_api_url` and `upload_email`; changes are saved atomically and apply
+after restart. **Upload** enrolls the device by email, exports and signs the
+current dataset, and uploads `dataset-*.tar.gz` plus its `.sig` through the
+Cloudflare backend. After the one-time enrollment, uploads use the device's
+Ed25519 key without another email verification. The reader-model pill lists
+every downloaded model under `runtime/hf-models` and switches the local
+inference server to the selected one.
+
+### Cloud upload backend
+
+Deploy the Worker and D1 database using [`cloudflare/README.md`](cloudflare/README.md).
+The backend holds the B2 keys; the app only receives short-lived presigned URLs.
 
 ## Training a meter reader with MiniMind-V
 

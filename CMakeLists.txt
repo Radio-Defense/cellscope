@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(CellScope VERSION 0.2.1 LANGUAGES C)
+project(CellScope VERSION 0.2.2 LANGUAGES C)
 
 if(APPLE)
   enable_language(OBJC)
@@ -25,6 +25,22 @@ endif()
 find_package(Freetype REQUIRED)
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(SODIUM QUIET IMPORTED_TARGET libsodium)
+endif()
+if(NOT SODIUM_FOUND)
+  find_path(SODIUM_INCLUDE_DIR NAMES sodium.h)
+  find_library(SODIUM_LIBRARY NAMES sodium libsodium)
+  if(NOT SODIUM_INCLUDE_DIR OR NOT SODIUM_LIBRARY)
+    message(FATAL_ERROR "libsodium was not found (install libsodium-dev or use vcpkg)")
+  endif()
+  add_library(PkgConfig::SODIUM UNKNOWN IMPORTED)
+  set_target_properties(PkgConfig::SODIUM PROPERTIES
+    IMPORTED_LOCATION "${SODIUM_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${SODIUM_INCLUDE_DIR}")
+endif()
 
 add_library(cellcore STATIC
   src/util.c
@@ -65,6 +81,7 @@ set(CELLSCOPE_SOURCES
   src/camera.c
   src/vlm.c
   src/stb_impl.c
+  src/cloud.c
 )
 
 add_executable(cellscope ${CELLSCOPE_SOURCES})
@@ -84,6 +101,7 @@ target_link_libraries(cellscope PRIVATE
   SDL3::SDL3
   Freetype::Freetype
   CURL::libcurl
+  PkgConfig::SODIUM
   Threads::Threads
 )
 target_include_directories(cellscope PRIVATE

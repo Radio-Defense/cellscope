@@ -14,6 +14,8 @@ typedef struct {
     int hf_port;
     char hf_device[32];        /* auto, cpu, mps, cuda:0 ... */
     int camera_index;
+    char upload_api_url[512];
+    char upload_email[256];
 } AppSettings;
 
 void settings_defaults(AppSettings *s);

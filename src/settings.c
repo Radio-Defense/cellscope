@@ -78,6 +78,7 @@ bool settings_load(AppSettings *s, char *err, size_t err_cap)
     }
     char backend[16] = {0};
     char repo[256] = {0}, path[CS_PATH_MAX] = {0}, device[32] = {0};
+    char upload_api[512] = {0}, upload_email[256] = {0};
     if (cs_json_get_string((const char *)data, "reader_backend", backend, sizeof(backend)) &&
         backend[0]) {
         cs_strlcpy(s->reader_backend, backend, sizeof(s->reader_backend));
@@ -89,6 +90,10 @@ bool settings_load(AppSettings *s, char *err, size_t err_cap)
     if (cs_json_get_string((const char *)data, "hf_device", device, sizeof(device)) &&
         device[0])
         cs_strlcpy(s->hf_device, device, sizeof(s->hf_device));
+    if (cs_json_get_string((const char *)data, "upload_api_url", upload_api, sizeof(upload_api)))
+        cs_strlcpy(s->upload_api_url, upload_api, sizeof(s->upload_api_url));
+    if (cs_json_get_string((const char *)data, "upload_email", upload_email, sizeof(upload_email)))
+        cs_strlcpy(s->upload_email, upload_email, sizeof(s->upload_email));
     s->hf_port = json_int((const char *)data, "hf_port", s->hf_port);
     s->camera_index = json_int((const char *)data, "camera_index", s->camera_index);
     s->version = json_int((const char *)data, "version", 1);
@@ -110,9 +115,12 @@ bool settings_save(const AppSettings *s, char *err, size_t err_cap)
         return false;
     }
     char esc_repo[2048], esc_path[CS_PATH_MAX * 2], esc_device[256];
+    char esc_upload_api[2048], esc_upload_email[1024];
     cs_json_escape(s->hf_model, esc_repo, sizeof(esc_repo));
     cs_json_escape(s->hf_model_path, esc_path, sizeof(esc_path));
     cs_json_escape(s->hf_device, esc_device, sizeof(esc_device));
+    cs_json_escape(s->upload_api_url, esc_upload_api, sizeof(esc_upload_api));
+    cs_json_escape(s->upload_email, esc_upload_email, sizeof(esc_upload_email));
     char body[CS_PATH_MAX * 3];
     int n = snprintf(body, sizeof(body),
                      "{\n"
@@ -122,10 +130,12 @@ bool settings_save(const AppSettings *s, char *err, size_t err_cap)
                      "  \"hf_model_path\": \"%s\",\n"
                      "  \"hf_port\": %d,\n"
                      "  \"hf_device\": \"%s\",\n"
-                     "  \"camera_index\": %d\n"
+                     "  \"camera_index\": %d,\n"
+                     "  \"upload_api_url\": \"%s\",\n"
+                     "  \"upload_email\": \"%s\"\n"
                      "}\n",
                      s->version, s->reader_backend, esc_repo, esc_path, s->hf_port,
-                     esc_device, s->camera_index);
+                     esc_device, s->camera_index, esc_upload_api, esc_upload_email);
     if (n <= 0 || (size_t)n >= sizeof(body)) {
         snprintf(err, err_cap, "Settings JSON is too large");
         return false;

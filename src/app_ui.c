@@ -1195,12 +1195,12 @@ static void draw_settings_modal(App *app, UiState *s)
     ui_text_ellipsis(ui, FONT_MONO, card.x + 26, card.y + 66, 7.8f, UI_FAINT,
                      card.w - 52, app->settings_target);
 
-    static const char *labels[7] = {
+    static const char *labels[9] = {
         "version", "reader_backend", "hf_model", "hf_model_path",
-        "hf_port", "hf_device", "camera_index",
+        "hf_port", "hf_device", "camera_index", "upload_api_url", "upload_email",
     };
-    float y = card.y + 92;
-    for (int i = 0; i < 7; i++) {
+    float y = card.y + 88;
+    for (int i = 0; i < 9; i++) {
         UiRect input = ui_rect(card.x + 170, y, card.w - 196, 30);
         bool focus = (app->settings_focus == i);
         ui_text_font(ui, FONT_MONO, card.x + 26, y + 8, 8.4f, UI_FAINT, labels[i]);
@@ -1294,21 +1294,46 @@ static void draw_upload_modal(App *app, UiState *s)
     Ui *ui = &app->ui;
     float W = (float)ui->win_w, H = (float)ui->win_h;
     ui_rect_fill(ui, ui_rect(0, 0, W, H), UI_COLOR(3, 5, 8, 200));
-    float cw = CS_MIN(600.0f, W - 60), ch = 228;
+    float cw = CS_MIN(660.0f, W - 60), ch = 320;
     UiRect card = ui_rect((W - cw) / 2, (H - ch) / 2, cw, ch);
     ui_round_rect(ui, ui_rect(card.x - 2, card.y - 2, card.w + 4, card.h + 4), 14,
                   UI_COLOR(35, 55, 48, 150));
     ui_panel(ui, card, UI_PANEL);
     ui_round_rect(ui, ui_rect(card.x + 1, card.y + 1, card.w - 2, 3), 2, UI_BLUE);
     ui_text_font(ui, FONT_SEMIBOLD, card.x + 26, card.y + 22, 19.0f, UI_TEXT,
-                 "Upload");
-    ui_text_wrapped_max(ui, card.x + 26, card.y + 56, card.w - 52, 10.2f, UI_MUTED,
-                        1.55f, 5,
-                        "Uploading is not implemented yet. Once we figure out a "
-                        "solid online storage mechanism that can't easily be taken "
-                        "down, this will immortalize your captured data for analysis.");
-    UiRect ok = ui_rect(card.x + card.w - 116, card.y + card.h - 50, 90, 32);
-    if (ui_button(ui, ok, "OK", BUTTON_PRIMARY, true)) app_close_upload_modal(app);
+                 "Upload dataset");
+    char api[512], email[256], status[512];
+    SDL_LockMutex(app->mu);
+    cs_strlcpy(api, app->settings.upload_api_url, sizeof(api));
+    cs_strlcpy(email, app->settings.upload_email, sizeof(email));
+    cs_strlcpy(status, app->upload_status, sizeof(status));
+    SDL_UnlockMutex(app->mu);
+
+    char line[1024];
+    snprintf(line, sizeof(line), "API · %s", api[0] ? api : "not configured");
+    ui_text_ellipsis(ui, FONT_MONO, card.x + 26, card.y + 58, 8.4f, UI_FAINT,
+                     card.w - 52, line);
+    snprintf(line, sizeof(line), "Email · %s", email[0] ? email : "not configured");
+    ui_text_ellipsis(ui, FONT_MONO, card.x + 26, card.y + 76, 8.4f, UI_FAINT,
+                     card.w - 52, line);
+    ui_text_wrapped_max(ui, card.x + 26, card.y + 104, card.w - 52, 9.8f, UI_MUTED,
+                        1.5f, 4,
+                        "The first upload enrolls this device. Confirm the Brevo "
+                        "verification email once, then upload signed datasets without "
+                        "re-verifying every time.");
+    if (status[0])
+        ui_text_wrapped_max(ui, card.x + 26, card.y + 174, card.w - 52, 9.4f,
+                            UI_ACCENT, 1.45f, 3, status);
+
+    float by = card.y + card.h - 52;
+    UiRect close = ui_rect(card.x + card.w - 118, by, 92, 34);
+    UiRect enroll = ui_rect(card.x + card.w - 342, by, 132, 34);
+    UiRect upload = ui_rect(card.x + card.w - 200, by, 72, 34);
+    if (ui_button(ui, close, "Close", BUTTON_SECONDARY, true)) app_close_upload_modal(app);
+    if (ui_button(ui, enroll, "Enroll email", BUTTON_SECONDARY, api[0] && email[0]))
+        app_enroll_device(app);
+    if (ui_button(ui, upload, "Upload", BUTTON_PRIMARY, api[0] && email[0]))
+        app_upload_dataset(app);
 }
 
 void app_draw(App *app)
