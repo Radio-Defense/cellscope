@@ -6,6 +6,27 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Operating system to build (or all)"
+        required: true
+        type: choice
+        options:
+          - all
+          - macOS
+          - Linux
+          - Windows
+        default: all
+      version:
+        description: "Release tag (e.g. v0.2.0). Leave empty for auto-generated tag."
+        required: false
+        type: string
+        default: ""
+      notes:
+        description: "Extra release notes (optional)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -15,6 +36,11 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # Run all platforms on push/PR; only the selected one (or all) on workflow_dispatch
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.os == 'all' ||
+      github.event.inputs.os == matrix.name
     strategy:
       fail-fast: false
       matrix:
@@ -157,10 +183,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: v0.2.0-build.${{ github.run_number }}
-          name: CellScope v0.2.0 build ${{ github.run_number }}
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' && github.event.inputs.version || format('v0.2.0-build.{0}', github.run_number) }}
+          name: CellScope ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' && github.event.inputs.version || format('v0.2.0 build {0}', github.run_number) }}
           body: |
-            Automated multi-platform build of CellScope.
+            Automated multi-platform production build of CellScope.
+
+            ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.os != 'all' && format('Built for: {0}', github.event.inputs.os) || '' }}
 
             Assets:
             - macOS (Apple silicon) application bundle
@@ -168,7 +196,9 @@ jobs:
             - Windows x64 executable and runtime assets
 
             The Python reader runtime is downloaded on first launch.
+
+            ${{ github.event.inputs.notes }}
           files: dist/*
           fail_on_unmatched_files: true
-          prerelease: true
+          prerelease: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.version == '' }}
           generate_release_notes: true
