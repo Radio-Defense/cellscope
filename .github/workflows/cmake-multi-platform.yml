@@ -60,20 +60,29 @@ jobs:
           tar -xzf /tmp/SDL3.tar.gz -C /tmp
           cmake -S /tmp/SDL3-3.4.0 -B /tmp/sdl3-build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DSDL_TESTS=OFF \
             -DSDL_EXAMPLES=OFF \
             -DSDL_SHARED=ON \
             -DSDL_STATIC=OFF
           cmake --build /tmp/sdl3-build --parallel
           sudo cmake --install /tmp/sdl3-build
+          sudo ldconfig
+          find /usr/local -name SDL3Config.cmake -print
+          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig \
+            pkg-config --modversion sdl3
 
       - name: Configure (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
         run: |
           extra=()
           if [ "$RUNNER_OS" = "macOS" ]; then
             extra+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          else
+            extra+=("-DCMAKE_PREFIX_PATH=/usr/local")
           fi
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
