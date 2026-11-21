@@ -44,6 +44,10 @@ if(MSVC)
 else()
   target_compile_options(cellcore PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+# glibc keeps sincosf/sqrtf/floorf in libm; propagate to the app and tests.
+if(UNIX AND NOT APPLE)
+  target_link_libraries(cellcore PUBLIC m)
+endif()
 
 set(CELLSCOPE_SOURCES
   src/main.c
