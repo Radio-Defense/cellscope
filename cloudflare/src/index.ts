@@ -13,6 +13,7 @@ interface Env {
   BREVO_SENDER_EMAIL: string;
   BREVO_SENDER_NAME: string;
   VERIFY_BASE_URL: string;
+  ALLOWLIST_REQUIRED?: string;
 }
 
 const encoder = new TextEncoder();
@@ -179,9 +180,13 @@ async function enroll(request: Request, env: Env): Promise<Response> {
   if (typeof body.public_key !== "string" || typeof body.signature !== "string")
     return bad("missing public key or signature");
 
-  const allowed = await env.DB.prepare("SELECT 1 FROM allowed_emails WHERE lower(email) = lower(?)")
-    .bind(body.email).first();
-  if (!allowed) return bad("email is not on the allowlist", 403);
+  const allowlistRequired = (env.ALLOWLIST_REQUIRED ?? "false").toLowerCase() === "true";
+  if (allowlistRequired) {
+    const allowed = await env.DB.prepare(
+      "SELECT 1 FROM allowed_emails WHERE lower(email) = lower(?)",
+    ).bind(body.email).first();
+    if (!allowed) return bad("email is not on the allowlist", 403);
+  }
 
   if (!await verifyDeviceSignature(body.public_key, body.signature, canonicalEnroll(body)))
     return bad("invalid device signature", 401);

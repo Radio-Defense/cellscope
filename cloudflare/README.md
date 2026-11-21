@@ -88,16 +88,19 @@ npx wrangler deploy
 The resulting `https://cellscope-upload.<subdomain>.workers.dev` is the API URL
 to put in CellScope’s Settings.
 
-## 5. Allow enrollment
+## 5. Enrollment access
 
-Only addresses in `allowed_emails` can enroll. Add an address manually:
+Enrollment is open by default: any valid email can enroll, but the device still
+has to click the Brevo verification link. To require an allowlist, set
+`ALLOWLIST_REQUIRED = "true"` in `wrangler.toml` and seed approved addresses:
 
 ```bash
 npx wrangler d1 execute cellscope-upload --remote \
   --command "INSERT INTO allowed_emails (email, note) VALUES ('you@example.com', 'approved')"
 ```
 
-This is intentionally not open registration.
+With allowlisting disabled, keep an eye on Brevo quotas and add rate limiting
+before public deployment.
 
 ## 6. CellScope settings
 
@@ -119,11 +122,26 @@ device key and do not require email verification.
   `~/.cellscope/cloud-device.key` with mode `0600` on Unix.
 - Every enrollment/upload/complete request has a unique nonce and timestamp.
 - The Worker verifies the signature against the enrolled public key.
-- Only D1-allowlisted emails can enroll.
+- Enrollment is open by default; set `ALLOWLIST_REQUIRED=true` to restrict it to
+  D1-approved emails.
 - The app uploads directly to single-object, 180-second B2 PUT URLs.
 - The Worker verifies archive size, SHA-512, and the `.sig` sidecar after upload.
 - B2 write and read credentials are separate; neither is sent to the app.
 - The Worker has no inbound connection to the app.
+
+## Troubleshooting
+
+- `email is not on the allowlist`: either set `ALLOWLIST_REQUIRED = "true"` and
+  seed `allowed_emails`, or leave the default `"false"` for open enrollment.
+- `Brevo returned 401: Key not found`: replace the Worker secret with a valid
+  Brevo **API key** (not an SMTP key):
+  ```bash
+  npx wrangler secret put BREVO_API_KEY
+  ```
+  Create it under Brevo → SMTP & API → API Keys. Also verify
+  `BREVO_SENDER_EMAIL` as a sender in Brevo.
+- `invalid device signature`: update CellScope; older builds read the Ed25519
+  public key from the wrong offset when reloading the device key.
 
 ## Limits and operational notes
 

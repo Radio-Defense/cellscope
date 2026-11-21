@@ -1,6 +1,6 @@
 # CellScope
 
-**Current version:** `0.2.3`
+**Current version:** `0.2.4`
 
 ## Origin and research mission
 

@@ -67,8 +67,10 @@ static bool load_or_create_keys(unsigned char pk[crypto_sign_PUBLICKEYBYTES],
         size_t n = fread(raw, 1, sizeof(raw), f);
         fclose(f);
         if (n == crypto_sign_SECRETKEYBYTES) {
+            /* libsodium secret keys are seed || public key. */
             memcpy(sk, raw, crypto_sign_SECRETKEYBYTES);
-            memcpy(pk, sk + crypto_sign_SECRETKEYBYTES, crypto_sign_PUBLICKEYBYTES);
+            memcpy(pk, sk + crypto_sign_SECRETKEYBYTES - crypto_sign_PUBLICKEYBYTES,
+                   crypto_sign_PUBLICKEYBYTES);
             return true;
         }
         if (n == sizeof(raw)) {

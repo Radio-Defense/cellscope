@@ -5,13 +5,14 @@ compatibility_date = "2026-11-21"
 [[d1_databases]]
 binding = "DB"
 database_name = "cellscope-upload"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "ee292b21-07c1-4431-89b6-58ef55c51de1"
 migrations_dir = "migrations"
 
 [vars]
 B2_REGION = "us-west-004"
 B2_S3_HOST = "s3.us-west-004.backblazeb2.com"
 B2_BUCKET = "cellscope-datasets"
-VERIFY_BASE_URL = "https://cellscope-upload.YOUR-SUBDOMAIN.workers.dev"
-BREVO_SENDER_EMAIL = "verify@example.com"
+VERIFY_BASE_URL = "https://cellscope-upload.maskirovka3301.workers.dev"
+BREVO_SENDER_EMAIL = "maskirovka3301@gmail.com"
 BREVO_SENDER_NAME = "CellScope"
+ALLOWLIST_REQUIRED = "false"
